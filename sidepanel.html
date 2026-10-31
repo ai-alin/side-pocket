@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Arc 侧边栏</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <!-- 图标收起模式下的 52px 纯图标窄栏（GrokBot 风格，无任何文字截断） -->
+  <aside id="railView" class="rail-view" aria-label="图标窄栏">
+    <button id="rail-expand" class="rail-btn rail-top" type="button" title="展开侧边栏">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.35"/>
+        <line x1="6" y1="3" x2="6" y2="13" stroke="currentColor" stroke-width="1.35"/>
+      </svg>
+    </button>
+    <div id="rail-pinned" class="rail-group"></div>
+    <div id="rail-divider" class="rail-divider"></div>
+    <div id="rail-tabs" class="rail-scroll"></div>
+    <button id="rail-new-tab" class="rail-btn rail-bottom" type="button" title="新建标签">＋</button>
+  </aside>
+
+  <!-- 展开状态下的完整 300px 视图 -->
+  <main id="fullView" class="full-view">
+    <button id="toggle-collapse" class="collapse-btn" type="button" title="收起侧边栏" aria-label="收起侧边栏">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.35"/>
+        <line x1="6" y1="3" x2="6" y2="13" stroke="currentColor" stroke-width="1.35"/>
+      </svg>
+    </button>
+
+    <section id="pinned-section" class="section">
+      <header class="sec-head"><span>置顶</span></header>
+      <div id="pinned" class="pinned-list" data-drop="pinned"></div>
+    </section>
+
+    <section id="saved-section" class="section">
+      <header class="sec-head">
+        <span>收藏</span>
+        <button id="new-folder" class="ghost-btn" type="button" title="新建文件夹">＋ 文件夹</button>
+      </header>
+      <div id="saved" class="tree" data-drop="root"></div>
+    </section>
+
+    <section id="tabs-section" class="section">
+      <header class="sec-head">
+        <span>今日</span>
+        <span id="tab-count" class="muted"></span>
+      </header>
+      <div id="tabs" class="tree"></div>
+      <button id="new-tab" class="row new-tab" type="button">
+        <span class="plus">＋</span>
+        <span class="title">新建标签</span>
+      </button>
+    </section>
+
+    <div class="side-footer">
+      <div class="footer-actions">
+        <button id="open-settings" class="ghost-btn footer-btn settings-gear" type="button" title="设置" aria-label="设置">⚙</button>
+      </div>
+    </div>
+  </main>
+
+  <div id="settings-pop" class="settings-pop" hidden>
+    <div class="settings-title">收起方式</div>
+    <label class="settings-opt">
+      <input type="radio" name="collapseMode" value="auto" />
+      <span>
+        <strong>图标收起</strong>
+        <small>收起时只显示网页图标，悬停或点右上角展开</small>
+      </span>
+    </label>
+    <label class="settings-opt">
+      <input type="radio" name="collapseMode" value="full-hide" />
+      <span>
+        <strong>完全隐藏</strong>
+        <small>收起时完全隐藏，鼠标移到屏幕边缘唤出</small>
+      </span>
+    </label>
+
+    <div class="settings-title settings-title-sub">显示位置</div>
+    <div class="settings-side-row">
+      <label class="side-pill">
+        <input type="radio" name="sidebarSide" value="left" />
+        <span>◀ 居左</span>
+      </label>
+      <label class="side-pill">
+        <input type="radio" name="sidebarSide" value="right" />
+        <span>居右 ▶</span>
+      </label>
+    </div>
+
+    <p class="settings-note">新标签页 / chrome:// 等内部页无法贴边时，点扩展图标会改用系统侧栏打开。</p>
+  </div>
+
+  <div id="drop-line" class="drop-line" hidden></div>
+  <footer id="status" class="status" hidden></footer>
+  <div id="menu" class="menu" hidden></div>
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

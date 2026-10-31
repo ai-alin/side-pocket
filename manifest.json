@@ -1,0 +1,69 @@
+{
+  "manifest_version": 3,
+  "name": "Arc 侧边栏",
+  "version": "0.3.5",
+  "description": "仿 Arc 浏览器的侧边栏：固定网站、保存标签、文件夹，随 Google 账号跨设备同步；支持自动收起贴边模式。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxs3kmcHwxUJuw7pYyDpy6lAsFLC5GLwDV7qZpmN6LCenpCLOa4dm86TazlsEf0OoCa6ONiuNH+cHM9Kv7O1n2wTdsFOKMAfrlDWVUe/pe0g4WTBSmhtFE9FdzV4q4F01Y2b7VjA4Y8izTTTG1S815qdq+PrqiGXNKDp/sXNbu1QOfQ/wG4cJF/3oUBuaoar0gmH0VZPJuUChUVA8Tzo3DbeRHazWN4nCrASMEJHgf9u6coQpvrmhBz25QOVqbLUczRCziS22jVJ90AJ/BwWdNO1iacoX6IV8Q0NlbBzXJYVYQRPVvBpj7rtg2jWrdELSzCSmz2bTdC6c3F5GuI0ZCQIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "tabs",
+    "favicon",
+    "clipboardWrite",
+    "windows",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "打开 Arc 侧边栏",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "overlay.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "sidepanel.html",
+        "sidepanel.css",
+        "sidepanel.js",
+        "model.js",
+        "store.js",
+        "settings.js",
+        "icons/*"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}
