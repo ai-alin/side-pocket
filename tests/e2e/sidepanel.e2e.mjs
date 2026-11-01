@@ -30,18 +30,20 @@ check('快捷键已注册（默认 Command+B / Ctrl+B）', /B$/.test(shortcut), 
 const behavior = await sw.evaluate(() => chrome.sidePanel.getPanelBehavior());
 check('点工具栏图标 / 按快捷键：打开或关闭侧边栏', behavior.openPanelOnActionClick === true, JSON.stringify(behavior));
 const manifest = await sw.evaluate(() => chrome.runtime.getManifest());
+check('名字是 Side Pocket', manifest.name === 'Side Pocket' && manifest.action.default_title === '打开或关闭 Side Pocket', manifest.name);
 check('不再申请「读取和修改所有网站」，不往网页里注入', !manifest.host_permissions && !manifest.content_scripts && !manifest.permissions.includes('scripting'));
 
 const site = await ctx.newPage();
 await site.goto('http://site.test/a');
 await sleep(1200);
-check('网页里没有被塞进任何东西', (await site.evaluate(() => document.querySelectorAll('[id^="arc-sidebar"]').length)) === 0);
+check('网页里没有被塞进任何东西', (await site.evaluate(() => document.querySelectorAll('[id^="arc-sidebar"]').length)) === 0); // 旧版浮动侧栏的元素 id
 
 console.log('侧栏界面');
 const panel = await ctx.newPage();
 panel.on('pageerror', (e) => console.log('pageerror', e.message));
 await panel.goto(`chrome-extension://${extId}/sidepanel.html`);
 await sleep(1200);
+check('侧栏页面标题是 Side Pocket', (await panel.title()) === 'Side Pocket', await panel.title());
 const today = await panel.locator('#tabs .row.tab').evaluateAll((rows) => rows.map((r) => r.title));
 check('「今日」里有打开的网页', today.includes('http://site.test/a'), JSON.stringify(today));
 check('「新建标签页」在今日列表上面', await panel.evaluate(() => !!(document.querySelector('#new-tab').compareDocumentPosition(document.querySelector('#tabs')) & Node.DOCUMENT_POSITION_FOLLOWING)));

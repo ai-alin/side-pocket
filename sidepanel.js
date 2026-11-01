@@ -153,7 +153,7 @@ async function resolveWindowId() {
     const last = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
     if (last?.id != null) return last.id;
   } catch (e) {
-    console.warn('[arc-sidebar] 取窗口失败', e);
+    console.warn('[side-pocket] 取窗口失败', e);
   }
   return tabs[0]?.windowId ?? null;
 }
@@ -184,13 +184,13 @@ async function op(name, args = {}) {
     M.applyOp(state, name, args);
     M.takeChanges(state);
   } catch (e) {
-    console.warn('[arc-sidebar]', e);
+    console.warn('[side-pocket]', e);
     return null;
   }
   render();
   inflight++;
   try {
-    const r = await chrome.runtime.sendMessage({ type: 'arc:op', op: name, args });
+    const r = await chrome.runtime.sendMessage({ type: 'side-pocket:op', op: name, args });
     if (!r?.ok) showStatus('操作失败：' + (r?.error || '未知错误'), 'warn', 4000);
     return r?.ok ? r.result : null;
   } catch (e) {
@@ -815,7 +815,7 @@ document.addEventListener('drop', async (e) => {
     try {
       await chrome.tabs.move(t.tabMove.tabId, { index: t.tabMove.index, windowId: t.tabMove.windowId });
     } catch (err) {
-      console.warn('[arc-sidebar] tabs.move 失败', err);
+      console.warn('[side-pocket] tabs.move 失败', err);
     }
   }
 });
@@ -893,7 +893,7 @@ async function init() {
   showSync(s[VIEW_KEY]?.status);
   if (!has[LOCAL_KEY]) {
     // 新版本第一次运行：等后台完成迁移 / 首次对账
-    await chrome.runtime.sendMessage({ type: 'arc:sync' }).catch((e) => console.warn('[arc-sidebar]', e));
+    await chrome.runtime.sendMessage({ type: 'side-pocket:sync' }).catch((e) => console.warn('[side-pocket]', e));
   }
   // 在后台打开的网页也先画一次，切过来时直接有内容，不会先空白再出现
   await refresh({ force: true });

@@ -9,7 +9,8 @@ import { createEngine, VIEW_KEY } from './store.js';
 
 const SELF_PREFIX = chrome.runtime.getURL('');
 const BIND_KEY = 'tabBindings'; // storage.session：tabId -> 今日条目，浏览器重启即清空（tab id 也会变）
-const FLUSH_ALARM = 'arc-flush';
+const FLUSH_ALARM = 'side-pocket-flush';
+const LEGACY_FLUSH_ALARM = 'arc-flush'; // 0.7.x 及以前的闹钟名，改名时可能还有一个没触发
 const RECONCILE_DELAY = 400;
 const FLUSH_DELAY = 1500;
 const FLUSH_GAP = 3000;
@@ -33,7 +34,7 @@ function run(fn) {
     await publish();
     return out;
   });
-  chain = p.catch((e) => console.error('[arc-sidebar]', e));
+  chain = p.catch((e) => console.error('[side-pocket]', e));
   return p;
 }
 
@@ -154,7 +155,7 @@ async function closeTabsFor(closed) {
     await chrome.tabs.remove(ids);
   } catch (e) {
     for (const id of ids) closing.delete(id);
-    console.warn('[arc-sidebar] 关闭标签失败', e);
+    console.warn('[side-pocket] 关闭标签失败', e);
   }
 }
 
@@ -206,7 +207,7 @@ async function flushNow() {
 }
 
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === FLUSH_ALARM) run(flushNow);
+  if (a.name === FLUSH_ALARM || a.name === LEGACY_FLUSH_ALARM) run(flushNow);
 });
 
 /* ---------- 侧栏发来的操作 ---------- */
@@ -246,8 +247,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     );
     return true;
   };
-  if (msg.type === 'arc:op' && fromExtPage) return reply(run(() => handleOp(msg.op, msg.args || {})));
-  if (msg.type === 'arc:sync' && fromExtPage) return reply(run(reconcileNow));
+  if (msg.type === 'side-pocket:op' && fromExtPage) return reply(run(() => handleOp(msg.op, msg.args || {})));
+  if (msg.type === 'side-pocket:sync' && fromExtPage) return reply(run(reconcileNow));
   return false;
 });
 
