@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>侧栏外观方案 · 第三轮</title>
+<style>
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 28px 28px 56px;
+  background: #E9EAEC;
+  color: #1D1D1F;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+body.dark { background: #0E0F11; color: #E8E8EA; }
+
+/* ---------- 预览页本身 ---------- */
+.top { display: flex; align-items: center; gap: 16px; margin-bottom: 26px; }
+.top h1 { margin: 0; font-size: 20px; font-weight: 650; }
+.intro { margin: -12px 0 28px; max-width: 780px; font-size: 13px; line-height: 1.7; color: #6E6E73; }
+body.dark .intro, body.dark .option p, body.dark .swatches span { color: #98989D; }
+.mode {
+  margin-left: auto;
+  border: none;
+  border-radius: 999px;
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 560;
+  cursor: pointer;
+  background: #1D1D1F;
+  color: #fff;
+}
+body.dark .mode { background: #E8E8EA; color: #111; }
+.mode:focus-visible, .sw:focus-visible { outline: 2px solid #1A73E8; outline-offset: 2px; }
+.options { display: flex; flex-wrap: wrap; gap: 48px 44px; align-items: flex-start; }
+.option { width: 440px; }
+.option h2 { margin: 16px 0 6px; font-size: 15px; font-weight: 650; }
+.option p { margin: 0 0 6px; font-size: 12.5px; line-height: 1.65; color: #6E6E73; }
+.option p b { font-weight: 600; color: inherit; }
+.stage { display: flex; gap: 12px; align-items: flex-start; }
+
+/* Chrome 标签组的 9 色（文件夹颜色统一用这一套） */
+.option {
+  --c-grey: #5F6368; --c-blue: #1A73E8; --c-red: #D93025; --c-yellow: #E8A200; --c-green: #1E8E3E;
+  --c-pink: #D01884; --c-purple: #A142F4; --c-cyan: #007B83; --c-orange: #F07F1F;
+}
+body.dark .option {
+  --c-grey: #BDC1C6; --c-blue: #8AB4F8; --c-red: #F28B82; --c-yellow: #FDD663; --c-green: #81C995;
+  --c-pink: #FF8BCB; --c-purple: #C58AF9; --c-cyan: #78D9EC; --c-orange: #FCAD70;
+}
+
+/* ---------- 侧栏组件（各方案通过变量换皮） ---------- */
+.panel, .rail {
+  position: relative;
+  height: 880px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  box-shadow: 0 24px 48px -24px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  -webkit-font-smoothing: antialiased;
+}
+.panel { width: 300px; padding: 12px 12px 0; font-size: var(--fs); }
+.scroll { height: 100%; overflow: hidden; padding-bottom: 60px; }
+
+.head { display: flex; align-items: center; gap: 6px; }
+.search {
+  flex: 1;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
+  border-radius: var(--r-ctl);
+  background: var(--field);
+  border: var(--field-border);
+  color: var(--muted);
+  font-size: 13px;
+}
+.search svg { width: 14px; height: 14px; flex: none; }
+.ibtn { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 8px; color: var(--muted); cursor: pointer; }
+.ibtn:hover { background: var(--hover); color: var(--fg); }
+.ibtn svg { width: 16px; height: 16px; }
+
+.sec {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 18px 8px 7px;
+  font-size: var(--sec-size);
+  font-weight: var(--sec-weight);
+  color: var(--sec-color);
+}
+.sec .num { font-size: 12px; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sec .act { margin-left: auto; padding: 2px 7px; border-radius: 7px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: pointer; }
+.sec .act:hover { background: var(--hover); color: var(--fg); }
+
+.pins { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: var(--pin-gap); }
+.pin {
+  position: relative;
+  height: var(--pin-h);
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-pin);
+  background: var(--tile);
+  border: var(--tile-border);
+  box-shadow: var(--tile-shadow);
+  cursor: pointer;
+  transition: background 120ms ease, transform 100ms ease;
+}
+.pin:hover { background: var(--tile-hover); }
+.pin:active { transform: scale(0.97); }
+.pin .fav { width: var(--pin-icon); height: var(--pin-icon); border-radius: calc(var(--pin-icon) * 0.26); font-size: calc(var(--pin-icon) * 0.5); }
+.pin.open::after, .ri.open::after {
+  content: "";
+  position: absolute;
+  bottom: var(--dot-b);
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.pin.active { background: var(--tile-active); box-shadow: var(--tile-active-shadow); }
+
+.fav {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  font-family: -apple-system, "PingFang SC", sans-serif;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--row-h);
+  padding: 0 8px;
+  border-radius: var(--r-row);
+  cursor: pointer;
+}
+.row:hover { background: var(--hover); }
+.row .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: var(--title-w); }
+.row.dim .t { color: var(--dim); font-weight: 400; }
+.row.active { background: var(--row-active); box-shadow: var(--row-active-shadow); color: var(--row-active-fg); }
+.row.active .t { font-weight: 600; }
+.row > svg { width: 16px; height: 16px; flex: none; }
+.row .x { display: none; width: 22px; height: 22px; border-radius: 7px; place-items: center; color: var(--muted); }
+.row .x svg { width: 11px; height: 11px; }
+.row:hover .x { display: grid; }
+.row .x:hover { background: var(--hover); color: var(--fg); }
+.muted-row { color: var(--muted); }
+.muted-row .t { font-weight: 400; }
+
+/* 文件夹 */
+.well { position: relative; margin: 1px 0; }
+.fic { width: var(--fi); height: var(--fi); flex: none; display: grid; place-items: center; color: var(--fc); }
+.fic svg { width: 100%; height: 100%; }
+.pie { display: none; }
+.folder .t { font-weight: var(--folder-w); }
+.cnt { display: flex; align-items: center; gap: 9px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.cnt .o { color: var(--accent); font-weight: 650; }
+.cnt .o::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 4px; border-radius: 50%; background: currentColor; vertical-align: 2px; }
+.cnt .n { min-width: 14px; text-align: right; color: var(--muted); }
+.caret { width: 12px; height: 12px; flex: none; color: var(--muted); transition: transform 180ms ease; }
+.well.open > .folder .caret { transform: rotate(90deg); }
+
+/* 层级：子项缩进一级，左侧竖线对准文件夹图标中心 */
+.kids { display: none; position: relative; padding-left: var(--indent); }
+.well.open > .kids { display: block; }
+.kids::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--gx) - 0.5px);
+  top: 2px;
+  bottom: 6px;
+  width: 1px;
+  border-radius: 1px;
+  background: var(--guide);
+}
+
+.foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 12px 10px;
+  background: linear-gradient(to bottom, transparent, var(--bg-end) 45%);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.foot .sync { display: flex; align-items: center; gap: 6px; }
+.foot .sync::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+
+/* 图标窄栏 */
+.rail { width: 52px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0 12px; }
+.ri { position: relative; width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: var(--r-ri); color: var(--muted); }
+.ri:hover { background: var(--hover); }
+.ri .fav { width: 18px; height: 18px; font-size: 9.5px; }
+.ri.pinned { background: var(--tile); border: var(--tile-border); box-shadow: var(--tile-shadow); }
+.ri.active { background: var(--tile-active); box-shadow: var(--tile-active-shadow); }
+.ri.dim .fav { opacity: 0.85; filter: saturate(0.6); }
+.ri svg { width: 16px; height: 16px; }
+.rdiv { width: 22px; height: 1px; margin: 2px 0; background: var(--line); flex: none; }
+.rspace { flex: 1; }
+
+/* ================= A 浮动玻璃 ================= */
+.t-glass {
+  --font: -apple-system, "SF Pro Text", "PingFang SC", sans-serif;
+  --fs: 13.5px;
+  --bg: rgba(250, 250, 252, 0.66); --bg-end: rgba(246, 246, 249, 0.94);
+  --fg: #1C1C1E; --muted: #6E6E76; --dim: #7C7C84;
+  --sec-color: #6E6E76; --sec-size: 12px; --sec-weight: 650;
+  --field: rgba(118, 118, 128, 0.12); --field-border: none;
+  --hover: rgba(0, 0, 0, 0.05);
+  --tile: rgba(255, 255, 255, 0.55); --tile-hover: rgba(255, 255, 255, 0.8);
+  --tile-border: 1px solid rgba(255, 255, 255, 0.6); --tile-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --tile-active: #fff; --tile-active-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.2);
+  --cols: 4; --pin-h: 50px; --pin-gap: 7px; --pin-icon: 22px; --r-pin: 14px; --dot-b: 5px;
+  --row-h: 34px; --r-row: 10px; --title-w: 500; --folder-w: 600;
+  --row-active: rgba(255, 255, 255, 0.85); --row-active-shadow: 0 2px 8px -3px rgba(0, 0, 0, 0.18); --row-active-fg: inherit;
+  --accent: #0A7AFF; --ok: #34C759;
+  --line: rgba(0, 0, 0, 0.1); --guide: rgba(0, 0, 0, 0.14);
+  --r-ctl: 10px; --r-ri: 10px; --fi: 18px; --indent: 22px; --gx: 17px;
+}
+body.dark .t-glass {
+  --bg: rgba(36, 36, 40, 0.66); --bg-end: rgba(34, 34, 38, 0.95);
+  --fg: #F2F2F7; --muted: #9A9AA2; --dim: #8A8A92; --sec-color: #9A9AA2;
+  --field: rgba(255, 255, 255, 0.08);
+  --hover: rgba(255, 255, 255, 0.07);
+  --tile: rgba(255, 255, 255, 0.07); --tile-hover: rgba(255, 255, 255, 0.12);
+  --tile-border: 1px solid rgba(255, 255, 255, 0.08); --tile-shadow: none;
+  --tile-active: rgba(255, 255, 255, 0.2); --tile-active-shadow: none;
+  --row-active: rgba(255, 255, 255, 0.12); --row-active-shadow: none;
+  --accent: #0A84FF; --line: rgba(255, 255, 255, 0.1); --guide: rgba(255, 255, 255, 0.16);
+}
+/* 一块网页，侧栏浮在上面 */
+.page {
+  position: relative;
+  height: 880px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 24px 48px -24px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.05);
+}
+.page.main { width: 360px; }
+.page.slim { width: 68px; }
+.page .hero {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 420px;
+  background:
+    radial-gradient(60% 50% at 20% 30%, #FF8A5B 0%, transparent 70%),
+    radial-gradient(55% 55% at 80% 20%, #6C8BFF 0%, transparent 70%),
+    radial-gradient(60% 60% at 60% 80%, #FFD15C 0%, transparent 70%),
+    #F4EFE9;
+}
+.page .lines { position: absolute; left: 24px; right: 24px; top: 450px; display: grid; gap: 12px; }
+.page .lines i { display: block; height: 10px; border-radius: 5px; background: #E7E7EA; }
+.page .lines i:nth-child(1) { height: 22px; width: 70%; background: #D9D9DE; margin-bottom: 8px; }
+.page .lines i:nth-child(3n) { width: 85%; }
+.page .card { position: absolute; left: 24px; right: 24px; top: 650px; height: 170px; border-radius: 14px; background: linear-gradient(135deg, #3DDC97, #2A9DF4); }
+body.dark .page { background: #121214; }
+body.dark .page .hero {
+  background:
+    radial-gradient(60% 50% at 20% 30%, #B4462A 0%, transparent 70%),
+    radial-gradient(55% 55% at 80% 20%, #3046B8 0%, transparent 70%),
+    radial-gradient(60% 60% at 60% 80%, #8A6A12 0%, transparent 70%),
+    #1A1714;
+}
+body.dark .page .lines i { background: #26262A; }
+body.dark .page .lines i:nth-child(1) { background: #303035; }
+.t-glass .panel, .t-glass .rail {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  bottom: 8px;
+  height: auto;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow: 0 16px 40px -14px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(28px) saturate(1.8);
+  -webkit-backdrop-filter: blur(28px) saturate(1.8);
+}
+body.dark .t-glass .panel, body.dark .t-glass .rail {
+  border-color: rgba(255, 255, 255, 0.09);
+  box-shadow: 0 16px 40px -14px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+.t-glass .foot { border-radius: 0 0 20px 20px; }
+
+/* ================= B 可调主题（Linear 式） ================= */
+/* 只有三个变量：底色色相 --h、底色浓度 --ch、强调色色相 --ah，其余全部用 oklch 算出 */
+.t-lin {
+  --h: 260; --ch: 0.006; --ah: 262;
+  --font: -apple-system, "SF Pro Text", "Inter", "PingFang SC", sans-serif;
+  --fs: 13px;
+  --bg: oklch(97.4% var(--ch) var(--h)); --bg-end: oklch(97.4% var(--ch) var(--h));
+  --fg: oklch(24% calc(var(--ch) * 2) var(--h)); --muted: oklch(55% calc(var(--ch) * 2) var(--h)); --dim: oklch(58% calc(var(--ch) * 1.5) var(--h));
+  --sec-color: oklch(55% calc(var(--ch) * 2) var(--h)); --sec-size: 12px; --sec-weight: 500;
+  --field: oklch(94.6% calc(var(--ch) * 1.4) var(--h)); --field-border: none;
+  --hover: oklch(94.2% calc(var(--ch) * 1.6) var(--h));
+  --tile: oklch(99.2% calc(var(--ch) * 0.6) var(--h)); --tile-hover: #fff;
+  --tile-border: 1px solid oklch(91.5% calc(var(--ch) * 1.6) var(--h)); --tile-shadow: none;
+  --tile-active: #fff; --tile-active-shadow: 0 0 0 1px oklch(80% calc(var(--ch) * 3) var(--h)), 0 1px 3px oklch(50% 0.02 var(--h) / 0.15);
+  --cols: 5; --pin-h: 42px; --pin-gap: 6px; --pin-icon: 20px; --r-pin: 9px; --dot-b: 4px;
+  --row-h: 30px; --r-row: 7px; --title-w: 500; --folder-w: 500;
+  --row-active: oklch(91.8% calc(var(--ch) * 2.4) var(--h)); --row-active-shadow: none; --row-active-fg: inherit;
+  --accent: oklch(57% 0.17 var(--ah)); --ok: oklch(62% 0.15 150);
+  --line: oklch(90% calc(var(--ch) * 1.6) var(--h)); --guide: oklch(87% calc(var(--ch) * 2) var(--h));
+  --r-ctl: 7px; --r-ri: 8px; --fi: 16px; --indent: 20px; --gx: 16px;
+}
+body.dark .t-lin {
+  --bg: oklch(20.5% calc(var(--ch) * 1.5) var(--h)); --bg-end: oklch(20.5% calc(var(--ch) * 1.5) var(--h));
+  --fg: oklch(93% calc(var(--ch) * 1.2) var(--h)); --muted: oklch(66% calc(var(--ch) * 2) var(--h)); --dim: oklch(62% calc(var(--ch) * 1.5) var(--h));
+  --sec-color: oklch(66% calc(var(--ch) * 2) var(--h));
+  --field: oklch(25% calc(var(--ch) * 1.8) var(--h));
+  --hover: oklch(25.5% calc(var(--ch) * 1.8) var(--h));
+  --tile: oklch(23.5% calc(var(--ch) * 1.8) var(--h)); --tile-hover: oklch(27% calc(var(--ch) * 2) var(--h));
+  --tile-border: 1px solid oklch(29% calc(var(--ch) * 2) var(--h));
+  --tile-active: oklch(30% calc(var(--ch) * 2.4) var(--h)); --tile-active-shadow: 0 0 0 1px oklch(48% calc(var(--ch) * 3) var(--h));
+  --row-active: oklch(28.5% calc(var(--ch) * 2.6) var(--h));
+  --accent: oklch(70% 0.15 var(--ah));
+  --line: oklch(29% calc(var(--ch) * 2) var(--h)); --guide: oklch(33% calc(var(--ch) * 2.4) var(--h));
+}
+.swatches { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.swatches span { font-size: 12px; color: #6E6E73; margin-right: 2px; }
+.sw {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  padding: 0;
+}
+.sw[aria-pressed="true"] { border-color: #fff; box-shadow: 0 0 0 2px #1D1D1F; }
+body.dark .sw[aria-pressed="true"] { border-color: #0E0F11; box-shadow: 0 0 0 2px #E8E8EA; }
+
+/* ================= C 树形（Chrome 原生 + Sidebery + Things） ================= */
+.t-tree {
+  --font: -apple-system, "Google Sans", "PingFang SC", sans-serif;
+  --fs: 13.5px;
+  --bg: #F8FAFD; --bg-end: #F8FAFD;
+  --fg: #1F1F1F; --muted: #5E6368; --dim: #747775;
+  --sec-color: #444746; --sec-size: 12.5px; --sec-weight: 600;
+  --field: #E9EEF6; --field-border: none;
+  --hover: #E9EEF6;
+  --tile: #FFFFFF; --tile-hover: #FFFFFF; --tile-border: none;
+  --tile-shadow: 0 1px 2px rgba(60, 64, 67, 0.12), 0 1px 3px 1px rgba(60, 64, 67, 0.06);
+  --tile-active: #D3E3FD; --tile-active-shadow: none;
+  --cols: 5; --pin-h: 46px; --pin-gap: 6px; --pin-icon: 20px; --r-pin: 999px; --dot-b: 3px;
+  --row-h: 32px; --r-row: 999px; --title-w: 500; --folder-w: 600;
+  --row-active: #D3E3FD; --row-active-shadow: none; --row-active-fg: #041E49;
+  --accent: #0B57D0; --ok: #146C2E;
+  --line: #E1E3E1; --guide: #C4C7C5;
+  --r-ctl: 999px; --r-ri: 999px; --fi: 18px; --indent: 26px; --gx: 17px;
+}
+.t-tree .pin { width: 46px; justify-self: center; }
+.t-tree .search { padding: 0 14px; }
+body.dark .t-tree {
+  --bg: #1E1F20; --bg-end: #1E1F20;
+  --fg: #E3E3E3; --muted: #A8ABAE; --dim: #9AA0A6; --sec-color: #C4C7C5;
+  --field: #282A2C; --hover: #2A2C2E;
+  --tile: #2D2F31; --tile-hover: #333537; --tile-shadow: none;
+  --tile-active: #004A77;
+  --row-active: #004A77; --row-active-fg: #C2E7FF;
+  --accent: #A8C7FA; --ok: #6DD58C;
+  --line: #3C4043; --guide: #4D5154;
+}
+/* 文件夹图标：小饼图，填满比例 = 里面已打开的网站占比（参考 Things 3） */
+.t-tree .fic { display: none; }
+.t-tree .pie {
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 0 1px;
+  flex: none;
+  padding: 2px;
+  border-radius: 50%;
+  border: 1.6px solid var(--fc);
+  background: conic-gradient(var(--fc) calc(var(--p) * 1turn), transparent 0) content-box;
+}
+/* 「├ └」拐角连线（参考 Sidebery 树形标签）：每个子项自己画一段 */
+.t-tree .kids::before { display: none; }
+.t-tree .kids > .row::before,
+.t-tree .kids > .well > .folder::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--gx) - var(--indent) - 0.5px);
+  top: 0;
+  height: 50%;
+  width: calc(var(--indent) - var(--gx) + 3px);
+  border-bottom: 1px solid var(--guide);
+}
+.t-tree .kids > :not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--gx) - var(--indent) - 0.5px);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--guide);
+}
+.t-tree .kids > .row:last-child::before,
+.t-tree .kids > .well:last-child > .folder::before {
+  border-left: 1px solid var(--guide);
+  border-bottom-left-radius: 7px;
+}
+.t-tree .kids > .well > .folder { position: relative; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; }
+}
+</style>
+</head>
+<body>
+  <div class="top">
+    <h1>侧栏外观：第三轮</h1>
+    <button class="mode" id="mode" type="button">切换到深色</button>
+  </div>
+  <p class="intro">这一轮先做了调研：Arc、Zen、Dia、Edge 这些浏览器的侧栏，Linear 公开的改版过程，苹果的侧栏设计规范和 macOS 26 的 Liquid Glass，Things 3，Sidebery 树形标签，以及 Mobbin 收集的真实产品侧栏。每个方案下面写了它借鉴的是哪几条。三个方案的文件夹颜色都用 Chrome 标签组的那 9 种颜色，和浏览器自己的标签组看起来是一套。网站图标是占位色块；点文件夹可以展开、收起。</p>
+
+  <div class="options">
+    <section class="option t-glass" data-pins="8">
+      <div class="stage">
+        <div class="page main"><div class="hero"></div><div class="lines"><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="card"></div><div class="panel"></div></div>
+        <div class="page slim"><div class="hero"></div><div class="rail"></div></div>
+      </div>
+      <h2>A　浮动玻璃</h2>
+      <p>侧栏是一块离边缘 8px、浮在网页上方的磨砂玻璃，能隐约透出后面的网页；收起后是一根同样材质的胶囊。我们的侧栏本来就浮在网页上，这样做比贴边更自然，网页也不用再被推开让位。</p>
+      <p><b>借鉴：</b>macOS 26 浮动的 Liquid Glass 侧栏；Zen 浏览器紧凑模式下浮出的侧栏。</p>
+    </section>
+
+    <section class="option t-lin" data-pins="10">
+      <div class="stage"><div class="panel"></div><div class="rail"></div></div>
+      <div class="swatches" role="group" aria-label="主题色">
+        <span>换个底色试试：</span>
+        <button class="sw" type="button" aria-pressed="true" title="石墨" data-h="260" data-ch="0.006" data-ah="262" style="background:#5B5E66"></button>
+        <button class="sw" type="button" aria-pressed="false" title="雾蓝" data-h="245" data-ch="0.022" data-ah="255" style="background:#6F8FB8"></button>
+        <button class="sw" type="button" aria-pressed="false" title="鼠尾草" data-h="150" data-ch="0.02" data-ah="155" style="background:#7E9B84"></button>
+        <button class="sw" type="button" aria-pressed="false" title="暖砂" data-h="70" data-ch="0.022" data-ah="45" style="background:#B39A78"></button>
+        <button class="sw" type="button" aria-pressed="false" title="暮紫" data-h="300" data-ch="0.022" data-ah="300" style="background:#9A86B6"></button>
+      </div>
+      <h2>B　可调主题</h2>
+      <p>安静、紧凑，行高 30px，置顶一行放 5 个。所有颜色只由一个「底色」算出来，你选什么底色，背景、文字、悬停、选中、深色模式都会自动协调，不会出现搭配难看的情况。上面的色点可以直接点着试。</p>
+      <p><b>借鉴：</b>Linear 改版——减少视觉噪音、图标和文字严格对齐、主题只用底色和强调色两三个变量生成。</p>
+    </section>
+
+    <section class="option t-tree" data-pins="10">
+      <div class="stage"><div class="panel"></div><div class="rail"></div></div>
+      <h2>C　树形</h2>
+      <p>子项用「├ └」式的拐角线连到上一级，最后一项是圆角拐弯，嵌套几层都一眼看清。文件夹图标是一个小饼图，填满多少表示里面开着多少网站。选中的条目是胶囊形浅蓝底，和 Chrome、Gmail 自己的界面一致。</p>
+      <p><b>借鉴：</b>Sidebery 树形标签的连线；Things 3 的进度饼图；Chrome 自己的 Material 界面。</p>
+    </section>
+  </div>
+
+<script>
+const ICON = {
+  search: '<svg viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.6" stroke="currentColor" stroke-width="1.6"/><path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  side: '<svg viewBox="0 0 16 16" fill="none"><rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v10" stroke="currentColor" stroke-width="1.4"/></svg>',
+  folder: '<svg viewBox="0 0 20 20" fill="none"><path d="M2.75 5.6c0-.97.78-1.75 1.75-1.75h3.05l1.65 1.8h6.3c.97 0 1.75.78 1.75 1.75v7.1c0 .97-.78 1.75-1.75 1.75h-11c-.97 0-1.75-.78-1.75-1.75z" fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+  caret: '<svg class="caret" viewBox="0 0 12 12" fill="none"><path d="M4.2 2.5 7.7 6 4.2 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  newFolder: '<svg viewBox="0 0 20 20" fill="none"><path d="M10 15.4H4.5c-.97 0-1.75-.78-1.75-1.75V5.6c0-.97.78-1.75 1.75-1.75h3.05l1.65 1.8h6.3c.97 0 1.75.78 1.75 1.75v2.3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M15 12v5M12.5 14.5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+  plus: '<svg viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  x: '<svg viewBox="0 0 12 12" fill="none"><path d="m3 3 6 6M9 3 3 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  gear: '<svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.8v1.6M8 12.6v1.6M14.2 8h-1.6M3.4 8H1.8M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1M12.4 12.4l-1.1-1.1M4.7 4.7 3.6 3.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+};
+
+const S = {
+  gmail: ['#EA4335', '#fff', 'M'], github: ['#1F2328', '#fff', 'G'], feishu: ['#3370FF', '#fff', '飞'],
+  notion: ['#fff', '#111', 'N', 1], figma: ['#A259FF', '#fff', 'F'], xhs: ['#FF2442', '#fff', '红'],
+  x: ['#000', '#fff', 'X'], bili: ['#00A1D6', '#fff', 'B'], yt: ['#FF0033', '#fff', '▶'], claude: ['#D97757', '#fff', 'C'],
+  dribbble: ['#EA4C89', '#fff', 'D'], mobbin: ['#111', '#fff', 'M'], coolors: ['#0066FF', '#fff', 'C'],
+  iconify: ['#1769AA', '#fff', 'I'], sfs: ['#5E5CE6', '#fff', 'S'],
+  chrome: ['#1A73E8', '#fff', 'C'], vite: ['#646CFF', '#fff', 'V'], juejin: ['#1E80FF', '#fff', '掘'], hn: ['#FF6600', '#fff', 'Y'],
+};
+const fav = (k) => {
+  const [bg, fg, g, ring] = S[k];
+  return `<span class="fav" style="background:${bg};color:${fg}${ring ? ';box-shadow:inset 0 0 0 1px rgba(0,0,0,.14)' : ''}">${g}</span>`;
+};
+
+const PINS = [
+  ['gmail', 'Gmail', 'active'], ['feishu', '飞书', 'open'], ['github', 'GitHub'], ['notion', 'Notion'], ['figma', 'Figma'],
+  ['xhs', '小红书'], ['bili', '哔哩哔哩', 'open'], ['x', 'X'], ['yt', 'YouTube'], ['claude', 'Claude', 'open'],
+];
+const SAVED = [
+  { name: '工作', c: 'orange', o: 2, n: 8 },
+  {
+    name: '设计', c: 'green', o: 2, n: 4, open: true,
+    kids: [
+      ['dribbble', 'Dribbble - 灵感', 'open'],
+      ['mobbin', 'Mobbin 移动端界面库'],
+      { name: '图标素材', c: 'purple', o: 1, n: 2, open: true, kids: [['iconify', 'Iconify 图标搜索'], ['sfs', 'SF Symbols 速查', 'open']] },
+      ['coolors', 'Coolors 配色生成'],
+    ],
+  },
+  { name: '生活', c: 'cyan', o: 0, n: 11 },
+  { name: '读书', c: 'red', o: 1, n: 6 },
+];
+const TODAY = [
+  ['chrome', 'chrome.sidePanel API 文档', 'active'],
+  ['vite', 'Vite 6 发布说明', 'open'],
+  ['xhs', '杭州周末去哪儿 - 小红书'],
+  ['juejin', 'Rust 所有权详解 - 掘金'],
+  ['hn', 'Hacker News', 'open'],
+];
+
+const pin = ([k, name, st = '']) => `<div class="pin ${st}" title="${name}">${fav(k)}</div>`;
+const link = ([k, name, st = ''], closable) =>
+  `<div class="row ${st || 'dim'}">${fav(k)}<span class="t">${name}</span>${closable ? `<span class="x" title="关闭（所有设备）">${ICON.x}</span>` : ''}</div>`;
+const item = (x) => (Array.isArray(x) ? link(x) : folder(x));
+const folder = (f) => `
+  <div class="well${f.open ? ' open' : ''}" style="--fc:var(--c-${f.c})">
+    <div class="row folder"><span class="fic">${ICON.folder}</span><span class="pie" style="--p:${(f.o / f.n).toFixed(3)}"></span><span class="t">${f.name}</span>
+      <span class="cnt">${f.o ? `<span class="o">${f.o}</span>` : ''}<span class="n">${f.n}</span></span>${ICON.caret}</div>
+    <div class="kids">${(f.kids || []).map(item).join('')}</div>
+  </div>`;
+
+function panel(opt) {
+  const pins = PINS.slice(0, Number(opt.dataset.pins || 8));
+  return `
+  <div class="scroll">
+    <div class="head"><div class="search">${ICON.search}<span>搜索收藏和标签</span></div><span class="ibtn" title="收起侧栏">${ICON.side}</span></div>
+    <div class="sec">置顶</div>
+    <div class="pins">${pins.map(pin).join('')}</div>
+    <div class="sec">收藏</div>
+    ${SAVED.map(item).join('')}
+    <div class="row muted-row">${ICON.newFolder}<span class="t">新建文件夹</span></div>
+    <div class="sec">今日 <span class="num">${TODAY.length}</span><span class="act" title="清除当前没有打开的条目，所有设备同步">清除未打开</span></div>
+    ${TODAY.map((t) => link(t, true)).join('')}
+    <div class="row muted-row">${ICON.plus}<span class="t">新建标签页</span></div>
+  </div>
+  <div class="foot"><span class="sync">已同步</span><span class="ibtn" title="设置">${ICON.gear}</span></div>`;
+}
+
+function rail() {
+  const ri = ([k, name, st = ''], extra = '') => `<span class="ri ${extra} ${st || 'dim'}" title="${name}">${fav(k)}</span>`;
+  const links = [];
+  const walk = (list) => list.forEach((x) => (Array.isArray(x) ? links.push(x) : walk(x.kids || [])));
+  walk(SAVED);
+  return `<span class="ri" title="展开侧栏">${ICON.side}</span>
+    ${PINS.slice(0, 6).map((p) => ri(p, 'pinned')).join('')}
+    <span class="rdiv"></span>
+    ${[...links, ...TODAY].slice(0, 8).map((p) => ri(p)).join('')}
+    <span class="rspace"></span>
+    <span class="ri" title="新建标签页">${ICON.plus}</span>`;
+}
+
+document.querySelectorAll('.option').forEach((opt) => {
+  opt.querySelector('.panel').innerHTML = panel(opt);
+  opt.querySelector('.rail').innerHTML = rail();
+});
+
+document.addEventListener('click', (e) => {
+  const f = e.target.closest('.row.folder');
+  if (f) f.parentElement.classList.toggle('open');
+  const sw = e.target.closest('.sw');
+  if (sw) {
+    const opt = sw.closest('.option');
+    for (const k of ['h', 'ch', 'ah']) opt.style.setProperty('--' + k, sw.dataset[k]);
+    opt.querySelectorAll('.sw').forEach((b) => b.setAttribute('aria-pressed', String(b === sw)));
+  }
+});
+const btn = document.getElementById('mode');
+btn.addEventListener('click', () => {
+  const dark = document.body.classList.toggle('dark');
+  btn.textContent = dark ? '切换到浅色' : '切换到深色';
+});
+</script>
+</body>
+</html>
