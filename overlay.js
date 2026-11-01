@@ -89,23 +89,15 @@
   }
 
   function persistExpanded(on) {
+    // 内容脚本默认读不到 chrome.storage.session，这里用页面自己的 sessionStorage
     try {
       sessionStorage.setItem(SESSION_EXPANDED_KEY, on ? '1' : '0');
-    } catch (_) {}
-    try {
-      if (chrome.storage?.session?.set) {
-        chrome.storage.session.set({ [SESSION_EXPANDED_KEY]: !!on }).catch(() => {});
-      }
-    } catch (_) {}
+    } catch (_) {
+      // 部分站点禁用 sessionStorage（沙箱 iframe 等），不记住展开状态即可
+    }
   }
 
   async function readPersistedExpanded() {
-    try {
-      if (chrome.storage?.session?.get) {
-        const d = await chrome.storage.session.get(SESSION_EXPANDED_KEY);
-        if (typeof d[SESSION_EXPANDED_KEY] === 'boolean') return d[SESSION_EXPANDED_KEY];
-      }
-    } catch (_) {}
     try {
       const v = sessionStorage.getItem(SESSION_EXPANDED_KEY);
       if (v === '1') return true;
@@ -590,10 +582,10 @@
       }
 
       initialized = true;
-      try {
-        chrome.runtime.sendMessage({ type: 'arc-sidebar:overlay-mounted' }).catch(() => {});
-      } catch (_) {}
-    } catch (_) {}
+    } catch (e) {
+      // 扩展被重新加载后，旧内容脚本的 chrome.* 会失效，这里静默退出
+      if (!String(e?.message || e).includes('context invalidated')) console.warn('[arc-sidebar]', e);
+    }
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {

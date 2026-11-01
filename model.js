@@ -1,30 +1,37 @@
-// 数据模型（纯函数 + 原地修改，不依赖 chrome API，可在 node 里测试）
+// 数据模型（纯函数，不依赖 chrome API，可在 node 里测试）
 //
-// state = {
-//   v: 1,
-//   nodes: { [id]: { id, type: 'link', title, url } | { id, type: 'folder', title, collapsed } },
-//   order: {
-//     pinned: [id...],      // 顶部「置顶」区，只放 link
-//     root:   [id...],      // 「收藏」区顶层，可放 link 和 folder
-//     today:  [id...],      // 「今日」同步临时标签区，只放 link
-//     [folderId]: [id...],  // 每个文件夹的子项顺序（可多层嵌套）
-//   }
-// }
-// 每个节点恰好出现在一个 order 列表里，节点的位置 = 它所在的列表 + 下标。
+// state = { nodes: { [id]: Node } }
+// Node  = { id, type: 'link' | 'folder', title, url?, parent, pos, collapsed?, t }
+//   parent  'pinned' | 'root' | 'today' | 某个文件夹 id
+//   pos     在父容器里的排序值（小数），按 (pos, id) 升序排列
+//   t       最后修改时间；多台设备改了同一条目时，按它决定谁赢
+//
+// 每个节点独立存储、独立同步：两台设备改不同条目时互不覆盖。
+// 各容器的顺序列表不存储，由 view() 从 parent / pos 推导。
+// 变更记在 s.changes 里（put / del），由 store.js 的引擎取走并上传。
 
 export const PINNED = 'pinned';
 export const ROOT = 'root';
 export const TODAY = 'today';
+const CONTAINERS = new Set([PINNED, ROOT, TODAY]);
+
+/** 网址太长的标签不进「今日」：chrome.storage.sync 单项上限 8KB */
+export const MAX_URL = 6000;
+const MAX_TITLE = 300;
 
 export function emptyState() {
-  return { v: 1, nodes: {}, order: { [PINNED]: [], [ROOT]: [], [TODAY]: [] } };
+  return { nodes: {} };
 }
 
 export function newId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-/** 允许 http / https / file 标签页进入「今日」列表；过滤 chrome://、extension、about: 等内部页 */
+export function isValidId(id) {
+  return typeof id === 'string' && /^[a-z0-9]{4,32}$/.test(id) && !CONTAINERS.has(id);
+}
+
+/** http / https / file 标签页可以进「今日」；chrome://、扩展页、about: 等内部页不进 */
 export function isSyncableTabUrl(u) {
   if (!u || typeof u !== 'string') return false;
   try {
@@ -33,152 +40,6 @@ export function isSyncableTabUrl(u) {
   } catch {
     return false;
   }
-}
-
-/** 清理旧版本遗留的 dismissed:* 等非节点 ID 脏数据 */
-export function sanitizeTabMap(rawMap) {
-  const out = {};
-  if (!rawMap || typeof rawMap !== 'object') return out;
-  for (const [k, v] of Object.entries(rawMap)) {
-    if (typeof v === 'string' && v && !v.startsWith('dismissed:')) {
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
-/** 修复不一致：缺失的列表、悬空 id、重复出现、孤儿节点 */
-export function normalize(s) {
-  if (!s || typeof s !== 'object') return emptyState();
-  s.v = 1;
-  s.nodes = s.nodes && typeof s.nodes === 'object' ? s.nodes : {};
-  s.order = s.order && typeof s.order === 'object' ? s.order : {};
-  for (const k of [PINNED, ROOT, TODAY]) if (!Array.isArray(s.order[k])) s.order[k] = [];
-  for (const [id, n] of Object.entries(s.nodes)) {
-    if (n.type === 'folder' && !Array.isArray(s.order[id])) s.order[id] = [];
-  }
-  // 删除不对应文件夹的列表
-  for (const k of Object.keys(s.order)) {
-    if (k !== PINNED && k !== ROOT && k !== TODAY && s.nodes[k]?.type !== 'folder') delete s.order[k];
-  }
-  const seen = new Set();
-  // 先扫描置顶、收藏、文件夹，最后扫描今日
-  const keys = [
-    PINNED,
-    ROOT,
-    ...Object.keys(s.order).filter((k) => k !== PINNED && k !== ROOT && k !== TODAY),
-    TODAY,
-  ];
-  for (const k of keys) {
-    if (!Array.isArray(s.order[k])) continue;
-    s.order[k] = s.order[k].filter((id) => {
-      const n = s.nodes[id];
-      if (!n || seen.has(id) || id === k) return false;
-      if ((k === PINNED || k === TODAY) && n.type !== 'link') return false;
-      seen.add(id);
-      return true;
-    });
-  }
-  for (const id of Object.keys(s.nodes)) if (!seen.has(id)) s.order[ROOT].push(id); // 孤儿归到顶层
-  return s;
-}
-
-export function parentOf(s, id) {
-  for (const [k, arr] of Object.entries(s.order)) if (arr.includes(id)) return k;
-  return null;
-}
-
-export function isContainer(s, key) {
-  return key === PINNED || key === ROOT || key === TODAY || s.nodes[key]?.type === 'folder';
-}
-
-/** container 是否等于 folderId 或在它内部 */
-export function isInside(s, container, folderId) {
-  let cur = container;
-  while (cur && cur !== ROOT && cur !== PINNED && cur !== TODAY) {
-    if (cur === folderId) return true;
-    cur = parentOf(s, cur);
-  }
-  return false;
-}
-
-function insert(s, parent, id, index) {
-  const arr = s.order[parent];
-  const i = index == null || index < 0 || index > arr.length ? arr.length : index;
-  arr.splice(i, 0, id);
-}
-
-export function addLink(s, { title, url }, parent = ROOT, index) {
-  if (!url) throw new Error('缺少 url');
-  if (!isContainer(s, parent)) throw new Error('目标不存在: ' + parent);
-  const id = newId();
-  s.nodes[id] = { id, type: 'link', title: title || url, url };
-  insert(s, parent, id, index);
-  return id;
-}
-
-export function addFolder(s, title = '新文件夹', parent = ROOT, index) {
-  if (parent === PINNED || parent === TODAY) throw new Error('该区域不能放文件夹');
-  if (!isContainer(s, parent)) throw new Error('目标不存在: ' + parent);
-  const id = newId();
-  s.nodes[id] = { id, type: 'folder', title, collapsed: false };
-  s.order[id] = [];
-  insert(s, parent, id, index);
-  return id;
-}
-
-export function rename(s, id, title) {
-  const n = s.nodes[id];
-  if (!n) return false;
-  const t = String(title ?? '').trim();
-  if (!t) return false;
-  n.title = t;
-  return true;
-}
-
-/** 删除节点；文件夹连同里面的内容一起删 */
-export function remove(s, id) {
-  const n = s.nodes[id];
-  if (!n) return false;
-  if (n.type === 'folder') for (const c of [...s.order[id]]) remove(s, c);
-  const p = parentOf(s, id);
-  if (p) s.order[p] = s.order[p].filter((x) => x !== id);
-  delete s.order[id];
-  delete s.nodes[id];
-  return true;
-}
-
-/** 把 id 移动到 parent 列表的 index 位置（index 是移动前目标列表里的下标） */
-export function move(s, id, parent, index) {
-  const n = s.nodes[id];
-  if (!n || !isContainer(s, parent)) return false;
-  if (n.type === 'folder' && (parent === PINNED || parent === TODAY || isInside(s, parent, id))) return false;
-  const from = parentOf(s, id);
-  const arr = s.order[from];
-  const oldIdx = arr.indexOf(id);
-  arr.splice(oldIdx, 1);
-  let i = index;
-  if (from === parent && i != null && i > oldIdx) i -= 1;
-  insert(s, parent, id, i);
-  return true;
-}
-
-export function pin(s, id, index) {
-  return s.nodes[id]?.type === 'link' && move(s, id, PINNED, index);
-}
-
-export function unpin(s, id) {
-  return parentOf(s, id) === PINNED && move(s, id, ROOT);
-}
-
-export function countDescendants(s, id) {
-  let c = 0;
-  for (const x of s.order[id] || []) c += 1 + countDescendants(s, x);
-  return c;
-}
-
-export function links(s) {
-  return Object.values(s.nodes).filter((n) => n.type === 'link');
 }
 
 /** 比较 URL 时忽略 #hash 和末尾斜杠 */
@@ -193,191 +54,399 @@ export function normUrl(u) {
   }
 }
 
-/** 置顶 + 收藏（含所有文件夹内）的 URL 集合，不含今日 */
-export function savedUrlSet(s) {
-  const todayIds = new Set(s.order?.[TODAY] || []);
-  return new Set(
-    links(s)
-      .filter((n) => !todayIds.has(n.id))
-      .map((n) => normUrl(n.url)),
-  );
+const clip = (str) => String(str ?? '').slice(0, MAX_TITLE);
+const tabUrl = (t) => t.url || t.pendingUrl || '';
+
+/* ---------- 变更记录 ---------- */
+
+function changes(s) {
+  if (!s.changes) s.changes = { put: new Set(), del: new Map() };
+  return s.changes;
 }
 
-export function findTodayByUrl(s, url) {
-  const target = normUrl(url);
-  if (!target) return null;
-  for (const id of s.order[TODAY] || []) {
-    const n = s.nodes[id];
-    if (n && normUrl(n.url) === target) return id;
-  }
-  return null;
+function touch(s, n) {
+  n.t = Math.max(Date.now(), (n.t || 0) + 1);
+  const c = changes(s);
+  c.put.add(n.id);
+  c.del.delete(n.id);
 }
 
-/** 在今日区新增或更新一条链接（若已在置顶/收藏中则不重复加入） */
-export function upsertToday(s, { title, url }, index) {
-  normalize(s);
-  if (!isSyncableTabUrl(url)) return null;
-  const nu = normUrl(url);
-  if (savedUrlSet(s).has(nu)) {
-    const dup = findTodayByUrl(s, url);
-    if (dup) {
-      remove(s, dup);
-      return { id: null, changed: true, created: false };
-    }
-    return null;
-  }
-  const existing = findTodayByUrl(s, url);
-  if (existing) {
-    const node = s.nodes[existing];
-    const nextTitle = title || node.title || url;
-    const changed = node.title !== nextTitle || node.url !== url;
-    node.title = nextTitle;
-    node.url = url;
-    return { id: existing, changed, created: false };
-  }
-  const id = addLink(s, { title: title || url, url }, TODAY, index);
-  return { id, changed: true, created: true };
+function drop(s, id, close) {
+  delete s.nodes[id];
+  const c = changes(s);
+  c.put.delete(id);
+  c.del.set(id, !!close || !!c.del.get(id));
 }
+
+/** 取走并清空本次变更：{ put: Set<id>, del: Map<id, 是否处处关闭> } */
+export function takeChanges(s) {
+  const c = s.changes || { put: new Set(), del: new Map() };
+  delete s.changes;
+  return c;
+}
+
+/* ---------- 推导视图 ---------- */
 
 /**
- * 将本机所有打开的非扩展标签页与同步 state.order.today 对账。
- * - 远端同步过来的今日条目（不在本机 tabMap 中、本机也没打开）：原样保留！
- * - 本机曾绑定在 tabMap 中、但现已关闭的 tab：从今日同步列表中移除。
- * - 本机当前打开的有效标签（且不在置顶/收藏中）：加入今日并记录到 tabMap。
- * - ignoredTabUrls: Map<tabId, normUrl>，仅存在于单次会话内存中，避免刚被远端关闭或正在异步关闭的 tab 在还没关完时被重加。
+ * 从节点推导每个容器的有序列表和每个节点的实际父容器。
+ * 自我修复（不写回存储，各设备推导结果一致）：
+ * - 父文件夹不存在、文件夹放进了置顶/今日 → 归到收藏顶层
+ * - 多设备同时移动造成的文件夹循环 → 环里 id 最小的那个归到收藏顶层
  */
-export function reconcileToday(s, openTabs = [], prevTabMap = {}, ignoredTabUrls = null) {
-  normalize(s);
-  let changed = false;
-  const tabMap = sanitizeTabMap(prevTabMap);
-  const saved = savedUrlSet(s);
-
-  // 1. 清理今日中已进入置顶/收藏或重复 URL 的条目
-  const seenUrl = new Set();
-  for (const id of [...s.order[TODAY]]) {
-    const n = s.nodes[id];
-    const nu = normUrl(n?.url);
-    if (!n || !isSyncableTabUrl(n.url) || saved.has(nu) || seenUrl.has(nu)) {
-      remove(s, id);
-      changed = true;
-    } else {
-      seenUrl.add(nu);
+export function view(s) {
+  const nodes = s.nodes;
+  const parent = {};
+  for (const n of Object.values(nodes)) {
+    let p = n.parent;
+    if (CONTAINERS.has(p)) {
+      if (n.type === 'folder' && p !== ROOT) p = ROOT;
+    } else if (p === n.id || nodes[p]?.type !== 'folder') {
+      p = ROOT;
+    }
+    parent[n.id] = p;
+  }
+  for (const start of Object.keys(parent)) {
+    const path = [];
+    const onPath = new Set();
+    let cur = start;
+    while (!CONTAINERS.has(cur) && !onPath.has(cur)) {
+      onPath.add(cur);
+      path.push(cur);
+      cur = parent[cur];
+    }
+    if (onPath.has(cur)) {
+      const cycle = path.slice(path.indexOf(cur)).sort();
+      parent[cycle[0]] = ROOT;
     }
   }
+  const order = { [PINNED]: [], [ROOT]: [], [TODAY]: [] };
+  for (const n of Object.values(nodes)) if (n.type === 'folder') order[n.id] = [];
+  for (const [id, p] of Object.entries(parent)) order[p].push(id);
+  const cmp = (a, b) => (nodes[a].pos || 0) - (nodes[b].pos || 0) || (a < b ? -1 : a > b ? 1 : 0);
+  for (const k of Object.keys(order)) order[k].sort(cmp);
+  return { order, parent };
+}
 
-  const openList = [...openTabs].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-  const openIds = new Set(openList.map((t) => String(t.id)));
-  const openUrls = new Set(
-    openList
-      .map((t) => t.url || t.pendingUrl || '')
-      .filter(isSyncableTabUrl)
-      .map(normUrl),
-  );
-
-  // 清理已关闭 tab 的内存忽略记录
-  if (ignoredTabUrls instanceof Map) {
-    for (const tid of [...ignoredTabUrls.keys()]) {
-      if (!openIds.has(String(tid))) ignoredTabUrls.delete(tid);
-    }
+/** container 是否等于 folderId 或在它内部 */
+export function isInside(v, container, folderId) {
+  let cur = container;
+  while (cur && !CONTAINERS.has(cur)) {
+    if (cur === folderId) return true;
+    cur = v.parent[cur];
   }
+  return false;
+}
 
-  // 2. 检查本机之前绑定过、但现在已经关掉的 tabId -> 从同步今日列表中移除
-  for (const [tid, nodeId] of Object.entries(tabMap)) {
-    if (!openIds.has(String(tid))) {
-      delete tabMap[tid];
-      const n = s.nodes[nodeId];
-      if (n && parentOf(s, nodeId) === TODAY) {
-        if (!openUrls.has(normUrl(n.url))) {
-          remove(s, nodeId);
-          changed = true;
-        }
+export function countDescendants(v, id) {
+  let c = 0;
+  for (const x of v.order[id] || []) c += 1 + countDescendants(v, x);
+  return c;
+}
+
+const inToday = (n) => !!n && n.type === 'link' && n.parent === TODAY;
+
+/** 置顶 + 收藏（含所有文件夹内）的网址集合，不含今日 */
+export function savedUrlSet(s, v = view(s)) {
+  const out = new Set();
+  for (const n of Object.values(s.nodes)) {
+    if (n.type === 'link' && v.parent[n.id] !== TODAY) out.add(normUrl(n.url));
+  }
+  return out;
+}
+
+/* ---------- 修改 ---------- */
+
+/** 把 n 放到 parentKey 列表的第 index 位（index 不含 n 自己） */
+function place(s, n, parentKey, index, v) {
+  const list = v.order[parentKey].filter((id) => id !== n.id);
+  const i = index == null || index < 0 || index > list.length ? list.length : index;
+  const prev = s.nodes[list[i - 1]]?.pos;
+  const next = s.nodes[list[i]]?.pos;
+  let pos;
+  if (prev == null && next == null) pos = 0;
+  else if (prev == null) pos = next - 1;
+  else if (next == null) pos = prev + 1;
+  else if (next - prev > 1e-6) pos = (prev + next) / 2;
+  else {
+    // 两个邻居的排序值挨得太近，整列重新编号
+    list.splice(i, 0, n.id);
+    list.forEach((id, k) => {
+      const m = s.nodes[id];
+      if (m.pos !== k || m.parent !== parentKey) {
+        m.pos = k;
+        m.parent = parentKey;
+        touch(s, m);
       }
-    }
+    });
+    return;
+  }
+  n.parent = parentKey;
+  n.pos = pos;
+  touch(s, n);
+}
+
+export function addLink(s, { id = newId(), title, url }, parent = ROOT, index) {
+  if (!url) throw new Error('缺少 url');
+  if (!isValidId(id) || s.nodes[id]) throw new Error('无效 id: ' + id);
+  const v = view(s);
+  if (!v.order[parent]) throw new Error('目标不存在: ' + parent);
+  const n = { id, type: 'link', title: clip(title || url), url };
+  s.nodes[id] = n;
+  place(s, n, parent, index, v);
+  return id;
+}
+
+export function addFolder(s, { id = newId(), title = '新文件夹' } = {}, parent = ROOT, index) {
+  if (parent === PINNED || parent === TODAY) throw new Error('该区域不能放文件夹');
+  if (!isValidId(id) || s.nodes[id]) throw new Error('无效 id: ' + id);
+  const v = view(s);
+  if (!v.order[parent]) throw new Error('目标不存在: ' + parent);
+  const n = { id, type: 'folder', title: clip(title) || '新文件夹', collapsed: false };
+  s.nodes[id] = n;
+  place(s, n, parent, index, v);
+  return id;
+}
+
+export function rename(s, id, title) {
+  const n = s.nodes[id];
+  const t = clip(String(title ?? '').trim());
+  if (!n || !t || t === n.title) return false;
+  n.title = t;
+  touch(s, n);
+  return true;
+}
+
+export function setCollapsed(s, id, collapsed) {
+  const n = s.nodes[id];
+  if (n?.type !== 'folder' || !!n.collapsed === !!collapsed) return false;
+  n.collapsed = !!collapsed;
+  touch(s, n);
+  return true;
+}
+
+/** 删除节点；文件夹连同里面的内容一起删。close=true 表示「今日」条目要在所有设备上关掉对应标签 */
+export function remove(s, id, { close = false } = {}) {
+  if (!s.nodes[id]) return false;
+  const v = view(s);
+  const rec = (x) => {
+    for (const c of v.order[x] || []) rec(c);
+    drop(s, x, close && v.parent[x] === TODAY);
+  };
+  rec(id);
+  return true;
+}
+
+/** 把 id 移到 parent 列表的 index 位置（index 是移动前目标列表里的下标） */
+export function move(s, id, parent, index) {
+  const n = s.nodes[id];
+  const v = view(s);
+  if (!n || !v.order[parent]) return false;
+  if (n.type === 'folder' && (parent === PINNED || parent === TODAY || isInside(v, parent, id))) return false;
+  const from = v.parent[id];
+  let i = index;
+  if (from === parent && i != null) {
+    const old = v.order[from].indexOf(id);
+    if (i > old) i -= 1;
+  }
+  place(s, n, parent, i, v);
+  return true;
+}
+
+export function pin(s, id, index) {
+  return s.nodes[id]?.type === 'link' && move(s, id, PINNED, index);
+}
+
+export function unpin(s, id) {
+  return view(s).parent[id] === PINNED && move(s, id, ROOT);
+}
+
+/** 侧栏发给后台的操作。侧栏先在本地副本上执行一次（立即显示），后台再执行一次（权威结果） */
+export function applyOp(s, op, a = {}) {
+  switch (op) {
+    case 'addFolder':
+      return addFolder(s, { id: a.id, title: a.title }, a.parent ?? ROOT, a.index);
+    case 'rename':
+      return rename(s, a.id, a.title);
+    case 'setCollapsed':
+      return setCollapsed(s, a.id, a.collapsed);
+    case 'remove':
+      return remove(s, a.id);
+    case 'closeToday':
+      return remove(s, a.id, { close: true });
+    case 'move':
+      return move(s, a.id, a.parent, a.index);
+    case 'pin':
+      return pin(s, a.id, a.index);
+    case 'unpin':
+      return unpin(s, a.id);
+    default:
+      throw new Error('未知操作: ' + op);
+  }
+}
+
+/* ---------- 「今日」与本机标签对账 ---------- */
+
+/**
+ * 「今日」是跨设备的待继续列表。本函数把本机打开的标签同步进去，规则：
+ * - 同一网址只留一条（id 最小的，各设备结论一致）；已在置顶/收藏里的网址不进今日。
+ *   去重删除不会关闭任何设备上的标签。
+ * - 已绑定的标签：标题变了 → 更新标题；在本机导航到新网址 → 条目跟着更新
+ *   （旧网址在本机别的标签里还开着时，改为给这个标签新建一条）；
+ *   导航到已收藏的网址 → 只解绑，条目保留，显示为未打开。
+ * - 未绑定的标签：网址已在今日 → 绑定上去；否则新建一条。
+ * - 这里不删除任何条目（去重除外）。删除只发生在 tabClosed() 和侧栏 ✕。
+ *
+ * bindings: { [tabId]: { id, url: 绑定时的 normUrl, title: 上次同步的标题 } }，只在本机本次会话有效。
+ * skip:     正在被关闭的 tabId，不参与对账，避免关闭途中又被加回来。
+ */
+export function reconcileTabs(s, tabs, bindings = {}, skip = new Set()) {
+  const b = { ...bindings };
+  let v = view(s);
+  const saved = savedUrlSet(s, v);
+
+  // 1. 去重：网址重复或已收藏的今日条目
+  const keep = new Map(); // normUrl -> 今日条目 id
+  for (const id of [...v.order[TODAY]].sort()) {
+    const n = s.nodes[id];
+    const nu = normUrl(n.url);
+    if (!isSyncableTabUrl(n.url) || saved.has(nu) || keep.has(nu)) remove(s, id);
+    else keep.set(nu, id);
   }
 
-  // 3. 将本机当前打开的有效标签页同步/绑定到今日
-  for (const t of openList) {
+  // 2. 逐个标签处理
+  const open = tabs
+    .filter((t) => t.id != null && !t.incognito && !skip.has(t.id))
+    .sort((a, c) => a.windowId - c.windowId || a.index - c.index);
+
+  for (const t of open) {
     const tid = String(t.id);
-    const rawUrl = t.url || t.pendingUrl || '';
-    const nu = normUrl(rawUrl);
-    if (!isSyncableTabUrl(rawUrl) || saved.has(nu)) {
-      if (tabMap[tid]) delete tabMap[tid];
+    const url = tabUrl(t);
+    const nu = normUrl(url);
+    const title = clip(t.title || '');
+    if (!isSyncableTabUrl(url) || url.length > MAX_URL) {
+      delete b[tid];
       continue;
     }
 
-    // 如果该 tab 当前 URL 在本次会话内存忽略表中（例如正在被关闭），跳过
-    if (ignoredTabUrls instanceof Map && ignoredTabUrls.get(tid) === nu) {
-      const byUrlId = findTodayByUrl(s, rawUrl);
-      if (byUrlId) {
-        ignoredTabUrls.delete(tid);
-        tabMap[tid] = byUrlId;
-      } else {
-        continue;
-      }
-    }
-
-    const boundId = tabMap[tid];
-    const byUrlId = findTodayByUrl(s, rawUrl);
-
-    if (boundId && s.nodes[boundId] && parentOf(s, boundId) === TODAY) {
-      if (byUrlId && byUrlId !== boundId) {
-        remove(s, boundId);
-        tabMap[tid] = byUrlId;
-        changed = true;
-      } else {
-        const node = s.nodes[boundId];
-        const nextTitle = t.title || node.title || rawUrl;
-        if (node.url !== rawUrl || node.title !== nextTitle) {
-          node.url = rawUrl;
-          node.title = nextTitle;
-          changed = true;
+    let bd = b[tid];
+    if (bd) {
+      const n = s.nodes[bd.id];
+      if (!inToday(n)) {
+        bd = null;
+      } else if (bd.url === nu) {
+        if (normUrl(n.url) !== nu) {
+          // 别的设备把这条改成了别的网址：本标签另起一条
+          bd = null;
+        } else {
+          if (title && title !== bd.title) {
+            if (n.title !== title) {
+              n.title = title;
+              touch(s, n);
+            }
+            b[tid] = { ...bd, title };
+          }
+          continue;
         }
+      } else {
+        // 本机标签导航到了新网址
+        if (saved.has(nu)) {
+          delete b[tid];
+          continue;
+        }
+        const other = keep.get(nu);
+        if (other) {
+          b[tid] = { id: other, url: nu, title };
+          continue;
+        }
+        const oldStillOpen = open.some(
+          (o) => o !== t && b[String(o.id)]?.id === bd.id && normUrl(tabUrl(o)) === bd.url,
+        );
+        if (!oldStillOpen) {
+          if (keep.get(normUrl(n.url)) === n.id) keep.delete(normUrl(n.url));
+          n.url = url;
+          n.title = title || url;
+          touch(s, n);
+          keep.set(nu, n.id);
+          b[tid] = { id: n.id, url: nu, title };
+          continue;
+        }
+        bd = null;
       }
+      delete b[tid];
+    }
+
+    if (saved.has(nu)) continue;
+    const existing = keep.get(nu);
+    if (existing) {
+      b[tid] = { id: existing, url: nu, title };
       continue;
     }
-
-    const res = upsertToday(s, { title: t.title || rawUrl, url: rawUrl });
-    if (res?.id) {
-      tabMap[tid] = res.id;
-      if (res.changed) changed = true;
-    }
+    const id = addLink(s, { title: title || url, url }, TODAY);
+    keep.set(nu, id);
+    b[tid] = { id, url: nu, title };
   }
 
-  // 4. 清理失效的 tabMap 绑定
-  for (const [tid, nodeId] of Object.entries(tabMap)) {
-    if (!s.nodes[nodeId] || parentOf(s, nodeId) !== TODAY) {
-      delete tabMap[tid];
-    }
-  }
-
-  return { changed, tabMap };
+  // 3. 指向已不在今日的条目的绑定作废
+  for (const [tid, bd] of Object.entries(b)) if (!inToday(s.nodes[bd.id])) delete b[tid];
+  return { bindings: b };
 }
 
 /**
- * 当收到远端同步过来的新 state 时，更新本机 tabMap（纯对象返回，绝不写入 dismissed:* 脏字符串）。
+ * 本机关掉了一个标签。只有「单独关掉这个标签」才删除条目并在所有设备上关闭；
+ * 关整个窗口、退出浏览器不删。本机还有别的标签开着同一网址时也不删。
  */
-export function syncRemoteToday(newState, openTabs = [], prevTabMap = {}, ignoredTabUrls = null) {
-  normalize(newState);
-  const tabMap = sanitizeTabMap(prevTabMap);
-  const tabById = new Map(openTabs.map((t) => [String(t.id), t]));
-  for (const [tid, val] of Object.entries(tabMap)) {
-    const t = tabById.get(String(tid));
-    if (!t) {
-      delete tabMap[tid];
-      continue;
-    }
-    if (!newState.nodes[val] || parentOf(newState, val) !== TODAY) {
-      const rawUrl = t.url || t.pendingUrl || '';
-      const existing = findTodayByUrl(newState, rawUrl);
-      if (existing) {
-        tabMap[tid] = existing;
-      } else {
-        delete tabMap[tid];
-        if (ignoredTabUrls instanceof Map) {
-          ignoredTabUrls.set(String(tid), normUrl(rawUrl));
-        }
-      }
-    }
+export function tabClosed(s, tabId, bindings, openTabs, { windowClosing = false } = {}) {
+  const b = { ...bindings };
+  const bd = b[String(tabId)];
+  delete b[String(tabId)];
+  if (!bd || windowClosing) return { bindings: b, removed: null };
+  const n = s.nodes[bd.id];
+  if (!inToday(n)) return { bindings: b, removed: null };
+  const nu = normUrl(n.url);
+  if (bd.url !== nu) return { bindings: b, removed: null }; // 条目已被别的设备改成别的网址
+  const stillOpen = openTabs.some((t) => t.id !== tabId && !t.incognito && normUrl(tabUrl(t)) === nu);
+  if (stillOpen) return { bindings: b, removed: null };
+  remove(s, n.id, { close: true });
+  for (const [tid, x] of Object.entries(b)) if (x.id === n.id) delete b[tid];
+  return { bindings: b, removed: n.id };
+}
+
+/**
+ * 别的设备「处处关闭」了一些今日条目（closed: [{ id, url }]），算出本机要关的标签：
+ * 绑定在这些条目上的标签，以及网址相同、且本机没有收藏这个网址的标签。
+ */
+export function tabsToClose(s, closed, tabs, bindings) {
+  const saved = savedUrlSet(s);
+  const ids = new Set(closed.map((c) => c.id));
+  const urls = new Set(closed.map((c) => normUrl(c.url)).filter((u) => u && !saved.has(u)));
+  return tabs
+    .filter((t) => !t.incognito && (ids.has(bindings[String(t.id)]?.id) || urls.has(normUrl(tabUrl(t)))))
+    .map((t) => t.id);
+}
+
+/* ---------- 旧版数据迁移 ---------- */
+
+/** 0.3.x 的整份 state（{ nodes, order }）转成新格式节点 */
+export function fromLegacy(old) {
+  const out = {};
+  if (!old || typeof old !== 'object' || !old.nodes || !old.order) return out;
+  const now = Date.now();
+  for (const [key, list] of Object.entries(old.order)) {
+    if (!Array.isArray(list)) continue;
+    list.forEach((id, i) => {
+      const n = old.nodes[id];
+      if (!n || out[id] || !isValidId(id) || (n.type !== 'link' && n.type !== 'folder')) return;
+      if (n.type === 'link' && !n.url) return;
+      out[id] = {
+        id,
+        type: n.type,
+        title: clip(n.title || n.url || '新文件夹'),
+        ...(n.type === 'link' ? { url: n.url } : { collapsed: !!n.collapsed }),
+        parent: key,
+        pos: i,
+        t: now,
+      };
+    });
   }
-  return tabMap;
+  return out;
 }

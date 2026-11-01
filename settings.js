@@ -1,34 +1,20 @@
-// UI 设置：与侧栏数据分片存储分开，单独几个小键，可在 node 里测
+// UI 设置：与侧栏数据分开存储，单独几个小键，可在 node 里测
 export const MODE_KEY = 'ui.collapseMode';
 export const SIDE_KEY = 'ui.sidebarSide';
 
-/** @deprecated 旧版「一直展开」；normalizeMode 会映射为 icon-rail */
-export const MODE_ALWAYS = 'always';
-export const MODE_AUTO = 'auto'; // 兼容旧值（等同于图标收起 icon-rail）
 export const MODE_ICON_RAIL = 'icon-rail'; // 图标收起（52px 纯图标窄栏）
-export const MODE_FULL_HIDE = 'full-hide'; // 完全隐藏（100% 移出屏幕，边缘感应唤出）
+export const MODE_FULL_HIDE = 'full-hide'; // 完全隐藏（移出屏幕，边缘感应唤出）
 export const DEFAULT_MODE = MODE_ICON_RAIL;
+/** 旧版的值，读取时都当作 icon-rail */
+export const LEGACY_MODES = ['always', 'auto'];
 
 export const SIDE_LEFT = 'left';
 export const SIDE_RIGHT = 'right';
 export const DEFAULT_SIDE = SIDE_LEFT;
 
-/**
- * 规范化收起模式。旧值 always / 未知值 → icon-rail，避免老安装卡在已下线的「一直展开」。
- * auto 保留为存储值（设置 UI 单选），语义等同 icon-rail。
- */
+/** 规范化收起模式：只有 full-hide 和 icon-rail 两种；旧值 always / auto / 未知值 → icon-rail */
 export function normalizeMode(v) {
-  if (v === MODE_FULL_HIDE) return MODE_FULL_HIDE;
-  if (v === MODE_AUTO) return MODE_AUTO;
-  if (v === MODE_ICON_RAIL) return MODE_ICON_RAIL;
-  // always / 空 / 未知 → 图标收起
-  return MODE_ICON_RAIL;
-}
-
-/** 是否使用页面贴边浮层（图标收起 / 完全隐藏）。always 已映射走，恒为 true。 */
-export function isOverlayMode(v) {
-  const m = normalizeMode(v);
-  return m === MODE_AUTO || m === MODE_ICON_RAIL || m === MODE_FULL_HIDE;
+  return v === MODE_FULL_HIDE ? MODE_FULL_HIDE : MODE_ICON_RAIL;
 }
 
 export function isFullHideMode(v) {
