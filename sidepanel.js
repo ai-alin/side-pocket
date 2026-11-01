@@ -21,7 +21,7 @@ const SELF_PREFIX = chrome.runtime.getURL('');
 const PAGE_MODE = new URLSearchParams(location.search).get('mode') || 'sidepanel';
 const IS_POPUP = PAGE_MODE === 'popup';
 const IS_OVERLAY = PAGE_MODE === 'overlay';
-if (IS_OVERLAY) document.documentElement.classList.add('is-collapsed');
+if (IS_OVERLAY) document.documentElement.classList.add('overlay', 'is-collapsed');
 
 let state = M.emptyState();
 let v = M.view(state);
@@ -33,15 +33,41 @@ let inflight = 0; // 已在本地生效、后台还没确认的操作数
 let stale = false;
 let rendering = false;
 let syncStatus = 'saved';
+let query = ''; // 搜索词
+let selected = 0; // 搜索结果里键盘选中的下标
+let results = []; // 当前搜索结果（节点）
 
 /* ---------- 工具 ---------- */
 
-function favicon(url) {
+function favicon(url, size = 32) {
   const u = new URL(chrome.runtime.getURL('/_favicon/'));
   u.searchParams.set('pageUrl', url);
-  u.searchParams.set('size', '32');
+  u.searchParams.set('size', String(size));
   return u.toString();
 }
+
+const SVG = {
+  folder: '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.75 5.6c0-.97.78-1.75 1.75-1.75h3.05l1.65 1.8h6.3c.97 0 1.75.78 1.75 1.75v7.1c0 .97-.78 1.75-1.75 1.75h-11c-.97 0-1.75-.78-1.75-1.75z" fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+  caret: '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.2 2.5 7.7 6 4.2 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  x: '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  more: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="12.5" cy="8" r="1.3" fill="currentColor"/></svg>',
+  save: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 2.5h7a1 1 0 0 1 1 1v10l-4.5-3-4.5 3v-10a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
+  pin: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M9.6 2.2 13.8 6.4l-1.5.4-2.6 2.6.2 2.8-1.2 1.2-2.4-2.4-3 3M5.1 7.1 4 8.3l1.2 1.2M5.1 7.1l2.6-2.6.4-1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+
+function svgIcon(svg, className) {
+  const s = el('span', { class: className, 'aria-hidden': 'true' });
+  s.innerHTML = svg; // 常量 SVG，不含用户数据
+  return s;
+}
+
+function actBtn(act, title, svg) {
+  const b = el('button', { type: 'button', 'data-act': act, title, 'aria-label': title });
+  b.innerHTML = svg; // 常量 SVG
+  return b;
+}
+
+const COLOR_NAMES = { grey: '灰', blue: '蓝', red: '红', yellow: '黄', green: '绿', pink: '粉', purple: '紫', cyan: '青', orange: '橙' };
 
 function el(tag, attrs = {}, ...children) {
   const e = document.createElement(tag);
@@ -53,15 +79,6 @@ function el(tag, attrs = {}, ...children) {
   }
   for (const c of children) if (c != null) e.append(c);
   return e;
-}
-
-const FOLDER_SVG = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 4.5h3.2l1.1 1.2H13.5v6.3a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 2.5 12V4.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M2.5 6.2h11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" opacity=".45"/></svg>';
-const CARET_SVG = '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.2 2.5 7.7 6 4.2 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-
-function icon(svg, className) {
-  const s = el('span', { class: className, 'aria-hidden': 'true' });
-  s.innerHTML = svg; // 常量 SVG，不含用户数据
-  return s;
 }
 
 function displayTitle(n) {
@@ -115,9 +132,14 @@ const SYNC_MSG = {
 };
 
 function showSync(st) {
-  if (!st || st === syncStatus) return;
+  if (!st) return;
+  const badge = $('#sync-state');
+  badge.textContent = SYNC_MSG[st] ? '未同步' : '已同步';
+  badge.classList.toggle('warn', !!SYNC_MSG[st]);
+  badge.title = SYNC_MSG[st] || '收藏和今日已同步到你的 Google 账号';
+  if (st === syncStatus) return;
   syncStatus = st;
-  if (SYNC_MSG[st]) showStatus(SYNC_MSG[st], 'warn');
+  if (SYNC_MSG[st]) showStatus(SYNC_MSG[st], 'warn', 8000);
   else if ($('#status').classList.contains('warn')) $('#status').hidden = true;
 }
 
@@ -163,22 +185,24 @@ function refreshSoon(ms = 80) {
   refreshTimer = setTimeout(refresh, ms);
 }
 
-/** 先在本地副本上执行（立即显示），再交给后台执行（权威结果） */
+/** 先在本地副本上执行（立即显示），再交给后台执行（权威结果）；返回后台的执行结果 */
 async function op(name, args = {}) {
   try {
     M.applyOp(state, name, args);
     M.takeChanges(state);
   } catch (e) {
     console.warn('[arc-sidebar]', e);
-    return;
+    return null;
   }
   render();
   inflight++;
   try {
     const r = await chrome.runtime.sendMessage({ type: 'arc:op', op: name, args });
     if (!r?.ok) showStatus('操作失败：' + (r?.error || '未知错误'), 'warn', 4000);
+    return r?.ok ? r.result : null;
   } catch (e) {
     showStatus('操作失败：' + (e?.message || e), 'warn', 4000);
+    return null;
   } finally {
     inflight--;
     if (!inflight) refresh();
@@ -218,9 +242,15 @@ function render() {
       : null;
   rendering = true;
   try {
-    renderPinned();
-    renderSaved();
-    renderTabs();
+    const searching = !!query;
+    $('#browse').hidden = searching;
+    $('#results-section').hidden = !searching;
+    if (searching) renderResults();
+    else {
+      renderPinned();
+      renderSaved();
+      renderTabs();
+    }
     renderRail();
   } finally {
     rendering = false;
@@ -238,36 +268,37 @@ function render() {
   }
 }
 
-function linkIcons(list, extraCls = '') {
+const favImg = (url, cls, size) => el('img', { class: cls, src: favicon(url, size), alt: '', draggable: 'false' });
+
+function railIcons(list, extraCls = '') {
   return list.map((n) =>
     el(
       'button',
       { type: 'button', class: 'rail-item' + extraCls + openCls(findTab(n.url)), title: displayTitle(n), 'data-id': n.id },
-      el('img', { src: favicon(n.url), alt: '', draggable: 'false' }),
+      favImg(n.url, '', 64),
     ),
   );
 }
 
+/** 收起后的图标栏只放置顶、开着的收藏和今日，不把所有收藏都堆进来 */
 function renderRail() {
   const pinBox = $('#rail-pinned');
   const tabBox = $('#rail-tabs');
-  if (!pinBox || !tabBox) return;
   const pinned = v.order[M.PINNED].map((id) => state.nodes[id]).filter((n) => n.type === 'link');
-  pinBox.replaceChildren(...linkIcons(pinned, ' pinned-ico'));
-  const divider = $('#rail-divider');
-  if (divider) divider.hidden = pinned.length === 0;
-
-  const saved = [];
+  pinBox.replaceChildren(...railIcons(pinned, ' pinned-ico'));
+  const openSaved = [];
   const collect = (parent) => {
     for (const id of v.order[parent] || []) {
       const n = state.nodes[id];
       if (n.type === 'folder') collect(id);
-      else saved.push(n);
+      else if (findTab(n.url)) openSaved.push(n);
     }
   };
   collect(M.ROOT);
   const today = v.order[M.TODAY].map((id) => state.nodes[id]);
-  tabBox.replaceChildren(...linkIcons([...saved, ...today]));
+  const rest = [...openSaved, ...today];
+  $('#rail-divider').hidden = !pinned.length || !rest.length;
+  tabBox.replaceChildren(...railIcons(rest));
 }
 
 function renderPinned() {
@@ -277,27 +308,47 @@ function renderPinned() {
       return el(
         'div',
         { class: 'tile' + openCls(findTab(n.url)), title: displayTitle(n), draggable: 'true', 'data-id': id, role: 'button', tabindex: '0' },
-        el('img', { src: favicon(n.url), alt: '', draggable: 'false' }),
+        favImg(n.url, '', 64),
       );
     }),
   );
 }
 
+/** 文件夹里（含子文件夹）一共几个网站、其中几个开着 */
+function folderStats(id) {
+  let total = 0;
+  let open = 0;
+  for (const c of v.order[id] || []) {
+    const n = state.nodes[c];
+    if (n.type === 'folder') {
+      const s = folderStats(c);
+      total += s.total;
+      open += s.open;
+    } else {
+      total++;
+      if (findTab(n.url)) open++;
+    }
+  }
+  return { total, open };
+}
+
 function renderSaved() {
-  const walk = (parent, depth) =>
+  const walk = (parent) =>
     v.order[parent].map((id) => {
       const n = state.nodes[id];
-      if (n.type !== 'folder') return linkRow(n, depth);
-      // 始终渲染子容器，靠 .collapsed + grid 过渡做展开/折叠动画
+      if (n.type !== 'folder') return linkRow(n);
+      // 始终渲染子容器，靠 .collapsed + grid 过渡做展开/折叠动画；子项的树形连线由 CSS 画
+      const kids = walk(id);
+      if (!kids.length) kids.push(el('div', { class: 'empty' }, '空文件夹，把网站拖进来'));
       return el(
         'div',
         { class: 'folder-well' + (n.collapsed ? ' collapsed' : ''), 'data-folder': n.id },
-        folderRow(n, depth),
-        el('div', { class: 'folder-children-wrap' }, el('div', { class: 'folder-children' }, ...walk(id, depth + 1))),
+        folderRow(n),
+        el('div', { class: 'folder-children-wrap' }, el('div', { class: 'folder-children' }, ...kids)),
       );
     });
-  const rows = walk(M.ROOT, 0);
-  if (!rows.length) rows.push(el('div', { class: 'empty' }, '还没有收藏。从「今日」点 ＋ 或拖到这里。'));
+  const rows = walk(M.ROOT);
+  if (!rows.length) rows.push(el('div', { class: 'empty' }, '还没有收藏。把「今日」里的网站拖到这里。'));
   $('#saved').replaceChildren(...rows);
 }
 
@@ -323,55 +374,115 @@ function titleNode(n) {
   return input;
 }
 
-function linkRow(n, depth) {
+function linkRow(n) {
   const t = findTab(n.url);
   return el(
     'div',
-    { class: 'row link' + openCls(t), style: `--depth:${depth}`, draggable: 'true', 'data-id': n.id, title: n.url },
-    el('img', { class: 'fav', src: favicon(n.url), alt: '', draggable: 'false' }),
+    { class: 'row link' + openCls(t), draggable: 'true', 'data-id': n.id, title: n.url },
+    favImg(n.url, 'fav'),
     titleNode(n),
     el(
       'span',
       { class: 'actions' },
-      t ? el('button', { 'data-act': 'close-tab', title: '关闭标签（保留在侧边栏）' }, '✕') : null,
-      el('button', { 'data-act': 'menu', title: '更多' }, '⋯'),
+      t ? actBtn('close-tab', '关闭标签（保留在收藏里）', SVG.x) : null,
+      actBtn('menu', '更多', SVG.more),
     ),
   );
 }
 
-function folderRow(n, depth) {
+function folderRow(n) {
+  const { total, open } = folderStats(n.id);
   return el(
     'div',
-    { class: 'row folder' + (n.collapsed ? ' is-collapsed' : ''), style: `--depth:${depth}`, draggable: 'true', 'data-id': n.id },
-    icon(FOLDER_SVG, 'folder-ico'),
+    {
+      class: 'row folder' + (n.collapsed ? ' is-collapsed' : ''),
+      style: n.color ? `--fc:var(--c-${n.color})` : null,
+      draggable: 'true',
+      'data-id': n.id,
+    },
+    svgIcon(SVG.folder, 'folder-ico'),
     titleNode(n),
-    el('span', { class: 'count' }, String(v.order[n.id].length || '')),
-    el('span', { class: 'actions' }, el('button', { 'data-act': 'menu', title: '更多' }, '⋯')),
-    icon(CARET_SVG, 'caret'),
+    el(
+      'span',
+      { class: 'cnt', title: open ? `${total} 个网站，${open} 个开着` : `${total} 个网站` },
+      open ? el('span', { class: 'o' }, String(open)) : null,
+      el('span', { class: 'n' }, String(total)),
+    ),
+    el('span', { class: 'actions' }, actBtn('menu', '更多', SVG.more)),
+    svgIcon(SVG.caret, 'caret'),
   );
 }
 
 function renderTabs() {
   const ids = v.order[M.TODAY];
   $('#tab-count').textContent = ids.length ? String(ids.length) : '';
+  $('#clear-today').hidden = !ids.some((id) => !findTab(state.nodes[id].url));
   const rows = ids.map((id) => {
     const n = state.nodes[id];
     return el(
       'div',
       { class: 'row tab' + openCls(findTab(n.url)), draggable: 'true', 'data-id': n.id, title: n.url },
-      el('img', { class: 'fav', src: favicon(n.url), alt: '', draggable: 'false' }),
+      favImg(n.url, 'fav'),
       titleNode(n),
       el(
         'span',
         { class: 'actions' },
-        el('button', { 'data-act': 'save', title: '保存到侧边栏' }, '＋'),
-        el('button', { 'data-act': 'pin', title: '固定' }, '📌'),
-        el('button', { 'data-act': 'close', title: '关闭（所有设备）' }, '✕'),
+        actBtn('save', '保存到收藏', SVG.save),
+        actBtn('pin', '置顶', SVG.pin),
+        actBtn('close', '关闭（所有设备）', SVG.x),
       ),
     );
   });
-  if (!rows.length) rows.push(el('div', { class: 'empty' }, '今天还没有其他标签'));
+  if (!rows.length) rows.push(el('div', { class: 'empty' }, '打开的网页会出现在这里，并同步到你的其他设备'));
   $('#tabs').replaceChildren(...rows);
+}
+
+/* ---------- 搜索 ---------- */
+
+/** 节点所在位置，显示在搜索结果右侧 */
+function whereOf(id) {
+  const names = [];
+  let p = v.parent[id];
+  while (state.nodes[p]?.type === 'folder') {
+    names.unshift(state.nodes[p].title);
+    p = v.parent[p];
+  }
+  if (p === M.PINNED) return '置顶';
+  if (p === M.TODAY) return '今日';
+  return names.length ? names.join(' / ') : '收藏';
+}
+
+function renderResults() {
+  const q = query.toLowerCase();
+  results = Object.values(state.nodes)
+    .filter((n) => n.type === 'link' && (n.title.toLowerCase().includes(q) || n.url.toLowerCase().includes(q)))
+    .sort((a, b) => {
+      // 标题命中优先，其次开着的优先
+      const at = a.title.toLowerCase().includes(q) ? 0 : 1;
+      const bt = b.title.toLowerCase().includes(q) ? 0 : 1;
+      return at - bt || (findTab(a.url) ? 0 : 1) - (findTab(b.url) ? 0 : 1);
+    })
+    .slice(0, 50);
+  selected = Math.min(selected, Math.max(results.length - 1, 0));
+  $('#result-count').textContent = results.length ? String(results.length) : '';
+  const rows = results.map((n, i) =>
+    el(
+      'div',
+      { class: 'row link' + openCls(findTab(n.url)) + (i === selected ? ' selected' : ''), 'data-id': n.id, title: n.url },
+      favImg(n.url, 'fav'),
+      el('span', { class: 'title' }, displayTitle(n)),
+      el('span', { class: 'where' }, whereOf(n.id)),
+    ),
+  );
+  if (!rows.length) rows.push(el('div', { class: 'empty' }, `没有找到「${query}」。试试网址里的关键词。`));
+  $('#results').replaceChildren(...rows);
+}
+
+function setQuery(q) {
+  query = q.trim();
+  selected = 0;
+  $('#scroll').scrollTop = 0;
+  render();
 }
 
 /* ---------- 菜单 ---------- */
@@ -384,11 +495,12 @@ function postToHost(type, open) {
 function showMenu(x, y, entries, row) {
   const m = $('#menu');
   m.replaceChildren(
-    ...entries.map((e) =>
-      e === '-'
-        ? el('hr')
-        : el('button', { class: e.danger ? 'danger' : '', onclick: () => { hideMenu(); e.run(); } }, e.label),
-    ),
+    ...entries.map((e) => {
+      if (e === '-') return el('hr');
+      if (e.heading) return el('div', { class: 'menu-label' }, e.heading);
+      if (e.colors) return colorPicker(e.colors);
+      return el('button', { type: 'button', class: e.danger ? 'danger' : '', onclick: () => { hideMenu(); e.run(); } }, e.label);
+    }),
   );
   m.hidden = false;
   document.querySelectorAll('.menu-open').forEach((r) => r.classList.remove('menu-open'));
@@ -397,6 +509,31 @@ function showMenu(x, y, entries, row) {
   const r = m.getBoundingClientRect();
   m.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 4)) + 'px';
   m.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 4)) + 'px';
+}
+
+/** 文件夹颜色选择：Chrome 标签组的 9 色 + 「无颜色」 */
+function colorPicker(id) {
+  const cur = state.nodes[id]?.color || null;
+  const pick = (color) => () => {
+    hideMenu();
+    op('setColor', { id, color });
+  };
+  return el(
+    'div',
+    { class: 'menu-colors', role: 'group', 'aria-label': '文件夹颜色' },
+    ...M.FOLDER_COLORS.map((c) =>
+      el('button', {
+        type: 'button',
+        class: 'swatch',
+        style: `--sw:var(--c-${c})`,
+        title: COLOR_NAMES[c],
+        'aria-label': COLOR_NAMES[c],
+        'aria-pressed': String(cur === c),
+        onclick: pick(c),
+      }),
+    ),
+    el('button', { type: 'button', class: 'swatch none', title: '无颜色', 'aria-label': '无颜色', 'aria-pressed': String(!cur), onclick: pick(null) }),
+  );
 }
 
 function hideMenu() {
@@ -417,6 +554,9 @@ function nodeMenu(id) {
       { label: '新建子文件夹', run: () => newFolder(id) },
       { label: '新建文件夹', run: () => newFolder(parent, after()) },
       '-',
+      { heading: '颜色' },
+      { colors: id },
+      '-',
       { label: count ? `删除文件夹（含 ${count} 项）` : '删除文件夹', danger: true, run: () => op('remove', { id }) },
     ];
   }
@@ -424,8 +564,8 @@ function nodeMenu(id) {
   if (parent === M.TODAY) {
     return [
       { label: t ? '切换到该标签' : '打开', run: () => openNode(n) },
-      { label: '保存到侧边栏', run: () => op('move', { id, parent: M.ROOT }) },
-      { label: '固定', run: () => op('pin', { id }) },
+      { label: '保存到收藏', run: () => op('move', { id, parent: M.ROOT }) },
+      { label: '置顶', run: () => op('pin', { id }) },
       { label: '重命名', run: () => startRename(id) },
       { label: '复制链接', run: () => copyText(n.url) },
       '-',
@@ -437,13 +577,19 @@ function nodeMenu(id) {
     { label: '重命名', run: () => startRename(id) },
     { label: '复制链接', run: () => copyText(n.url) },
     parent === M.PINNED
-      ? { label: '取消固定', run: () => op('unpin', { id }) }
-      : { label: '固定', run: () => op('pin', { id }) },
+      ? { label: '取消置顶', run: () => op('unpin', { id }) }
+      : { label: '置顶', run: () => op('pin', { id }) },
   ];
   if (parent !== M.PINNED) items.push({ label: '新建文件夹', run: () => newFolder(parent, after()) });
   if (t) items.push({ label: '关闭标签', run: () => chrome.tabs.remove(t.id) });
   items.push('-', { label: '删除', danger: true, run: () => op('remove', { id }) });
   return items;
+}
+
+async function clearToday() {
+  const openUrls = tabs.map((t) => t.url || t.pendingUrl || '');
+  const n = await op('clearToday', { openUrls });
+  showStatus(n ? `已清除 ${n} 个没打开的网页` : '没有需要清除的网页', 'info', 2500);
 }
 
 /* ---------- 交互事件 ---------- */
@@ -458,6 +604,7 @@ document.addEventListener('click', (e) => {
   if (!e.target.closest('#menu')) hideMenu();
   if (e.target.closest('input.rename')) return;
   if (e.target.closest('#new-folder')) return newFolder();
+  if (e.target.closest('#clear-today')) return clearToday();
   if (e.target.closest('#new-tab, #rail-new-tab')) return chrome.tabs.create({ windowId: winId ?? undefined });
   if (e.target.closest('#rail-expand')) {
     postToHost('request-expand');
@@ -498,6 +645,29 @@ document.addEventListener('contextmenu', (e) => {
 });
 
 document.addEventListener('keydown', (e) => e.key === 'Escape' && hideMenu());
+
+const searchInput = $('#search');
+searchInput.addEventListener('input', () => setQuery(searchInput.value));
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.stopPropagation();
+    if (searchInput.value) {
+      searchInput.value = '';
+      setQuery('');
+    } else searchInput.blur();
+    return;
+  }
+  if (!query || !results.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    selected = (selected + (e.key === 'ArrowDown' ? 1 : -1) + results.length) % results.length;
+    renderResults();
+    document.querySelector('#results .row.selected')?.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    openNode(results[selected]);
+  }
+});
 window.addEventListener('blur', hideMenu);
 
 /* ---------- 拖拽 ---------- */

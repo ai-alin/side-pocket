@@ -130,6 +130,33 @@ test('tabsToClose：按绑定和网址找，跳过本机已收藏的网址', () 
   assert.deepEqual(ids.sort(), [1, 3]);
 });
 
+test('文件夹颜色：只接受 9 种颜色，只对文件夹生效', () => {
+  const s = M.emptyState();
+  const f = M.addFolder(s, {});
+  const l = M.addLink(s, { title: 'L', url: 'https://l.com' });
+  M.takeChanges(s);
+  assert.equal(M.setColor(s, f, 'green'), true);
+  assert.equal(s.nodes[f].color, 'green');
+  assert.ok(M.takeChanges(s).put.has(f));
+  assert.equal(M.setColor(s, f, 'green'), false);
+  assert.equal(M.setColor(s, f, 'gold'), true); // 非法颜色 = 清除颜色
+  assert.equal(s.nodes[f].color, undefined);
+  assert.equal(M.setColor(s, l, 'red'), false);
+});
+
+test('清除未打开：只删本机没开着的今日条目，且不触发处处关闭', () => {
+  const s = M.emptyState();
+  M.reconcileTabs(s, [tab(1, 'https://a.com'), tab(2, 'https://b.com'), tab(3, 'https://c.com')]);
+  M.addLink(s, { title: 'Saved', url: 'https://saved.com' });
+  M.takeChanges(s);
+  const n = M.applyOp(s, 'clearToday', { openUrls: ['https://b.com/#top'] });
+  assert.equal(n, 2);
+  assert.deepEqual(titles(s, M.TODAY), ['https://b.com']);
+  assert.deepEqual(titles(s, M.ROOT), ['Saved']);
+  const c = M.takeChanges(s);
+  assert.equal([...c.del.values()].some(Boolean), false);
+});
+
 test('旧格式迁移', () => {
   const old = {
     v: 1,

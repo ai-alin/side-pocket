@@ -41,6 +41,7 @@ export function packNode(n) {
   const o = { k: n.type === 'folder' ? 'f' : 'l', ti: n.title, p: n.parent, o: n.pos, t: n.t };
   if (n.type === 'folder') {
     if (n.collapsed) o.c = 1;
+    if (n.color) o.co = n.color;
   } else {
     o.u = n.url;
   }
@@ -54,7 +55,10 @@ export function unpackNode(id, o) {
   if (type === 'link' && typeof o.u !== 'string') return null;
   const n = { id, type, title: String(o.ti ?? ''), parent: o.p, pos: Number(o.o) || 0, t: Number(o.t) || 0 };
   if (type === 'link') n.url = o.u;
-  else n.collapsed = !!o.c;
+  else {
+    n.collapsed = !!o.c;
+    if (M.FOLDER_COLORS.includes(o.co)) n.color = o.co;
+  }
   return n;
 }
 

@@ -175,6 +175,20 @@ test('两台设备各自给同一网址建了今日条目：合并后只剩一�
   assert.equal(titles(B.e, M.TODAY).length, 1);
 });
 
+test('文件夹颜色跨设备同步', async () => {
+  const cloud = area();
+  const A = await device(cloud, 'devA');
+  const f = await A.e.apply((s) => M.addFolder(s, { title: '工作' }));
+  await A.e.apply((s) => M.setColor(s, f, 'orange'));
+  await A.e.flush();
+  const B = await device(cloud, 'devB');
+  assert.equal(B.e.state.nodes[f].color, 'orange');
+  await B.e.apply((s) => M.setColor(s, f, null));
+  await B.e.flush();
+  await A.e.mergeRemote();
+  assert.equal(A.e.state.nodes[f].color, undefined);
+});
+
 test('迁移 0.3.x 的切片数据，并清掉旧键', async () => {
   const old = {
     v: 1,

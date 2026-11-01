@@ -218,12 +218,17 @@ chrome.alarms.onAlarm.addListener((a) => {
 
 /* ---------- 侧栏发来的操作 ---------- */
 
-const NO_RECONCILE = new Set(['rename', 'setCollapsed', 'addFolder']);
+const NO_RECONCILE = new Set(['rename', 'setCollapsed', 'setColor', 'addFolder']);
 
 async function handleOp(op, a) {
   if (a.id != null && !M.isValidId(a.id)) throw new Error('无效 id');
   let result;
-  if (op === 'closeToday') {
+  if (op === 'clearToday') {
+    // 「本机开着哪些网址」以后台查到的为准，不信任侧栏传来的
+    const tabs = (await chrome.tabs.query({})).filter((t) => !isSelf(t) && !t.incognito);
+    const openUrls = tabs.map((t) => t.url || t.pendingUrl || '');
+    result = await engine.apply((s) => M.applyOp(s, op, { openUrls }));
+  } else if (op === 'closeToday') {
     const n = engine.state.nodes[a.id];
     if (!n) return false;
     result = await engine.apply((s) => M.applyOp(s, op, a));

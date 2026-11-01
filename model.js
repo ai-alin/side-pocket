@@ -15,6 +15,9 @@ export const ROOT = 'root';
 export const TODAY = 'today';
 const CONTAINERS = new Set([PINNED, ROOT, TODAY]);
 
+/** 文件夹可选颜色：与 Chrome 标签组的 9 种颜色一致；不设颜色时显示为中性灰 */
+export const FOLDER_COLORS = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
+
 /** 网址太长的标签不进「今日」：chrome.storage.sync 单项上限 8KB */
 export const MAX_URL = 6000;
 const MAX_TITLE = 300;
@@ -224,6 +227,35 @@ export function setCollapsed(s, id, collapsed) {
   return true;
 }
 
+/** 设置文件夹颜色；color 为空表示不设颜色 */
+export function setColor(s, id, color) {
+  const n = s.nodes[id];
+  const c = FOLDER_COLORS.includes(color) ? color : undefined;
+  if (n?.type !== 'folder' || n.color === c) return false;
+  if (c) n.color = c;
+  else delete n.color;
+  touch(s, n);
+  return true;
+}
+
+/**
+ * 清除「今日」里本机没有打开的条目，返回清除的条数。
+ * 不带「处处关闭」：别的设备上还开着的标签不会被关，它们下次对账时会重新出现在今日里；
+ * 哪台设备都没开着的条目就此消失。
+ */
+export function clearUnopenedToday(s, openUrls = []) {
+  const open = new Set([...openUrls].map(normUrl));
+  const v = view(s);
+  let count = 0;
+  for (const id of v.order[TODAY]) {
+    if (!open.has(normUrl(s.nodes[id].url))) {
+      remove(s, id);
+      count++;
+    }
+  }
+  return count;
+}
+
 /** 删除节点；文件夹连同里面的内容一起删。close=true 表示「今日」条目要在所有设备上关掉对应标签 */
 export function remove(s, id, { close = false } = {}) {
   if (!s.nodes[id]) return false;
@@ -269,6 +301,10 @@ export function applyOp(s, op, a = {}) {
       return rename(s, a.id, a.title);
     case 'setCollapsed':
       return setCollapsed(s, a.id, a.collapsed);
+    case 'setColor':
+      return setColor(s, a.id, a.color);
+    case 'clearToday':
+      return clearUnopenedToday(s, a.openUrls || []);
     case 'remove':
       return remove(s, a.id);
     case 'closeToday':
