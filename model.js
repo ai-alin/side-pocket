@@ -329,7 +329,9 @@ export function applyOp(s, op, a = {}) {
  * - 已绑定的标签：标题变了 → 更新标题；在本机导航到新网址 → 条目跟着更新
  *   （旧网址在本机别的标签里还开着时，改为给这个标签新建一条）；
  *   导航到已收藏的网址 → 只解绑，条目保留，显示为未打开。
- * - 未绑定的标签：网址已在今日 → 绑定上去；否则新建一条。
+ * - 未绑定的标签：网址已在今日 → 绑定上去；否则新建一条，放在今日最上面。
+ *   这一次对账里新建的多条（比如刚打开浏览器恢复了一批标签）作为一组放在最上面，
+ *   组内按标签栏从左到右的顺序；已有条目的位置不变。
  * - 这里不删除任何条目（去重除外）。删除只发生在 tabClosed() 和侧栏 ✕。
  *
  * bindings: { [tabId]: { id, url: 绑定时的 normUrl, title: 上次同步的标题 } }，只在本机本次会话有效。
@@ -350,6 +352,7 @@ export function reconcileTabs(s, tabs, bindings = {}, skip = new Set()) {
   }
 
   // 2. 逐个标签处理
+  let insertAt = 0; // 新条目放在今日最上面：第一条放第 0 位，同一批的下一条接在它后面
   const open = tabs
     .filter((t) => t.id != null && !t.incognito && !skip.has(t.id))
     .sort((a, c) => a.windowId - c.windowId || a.index - c.index);
@@ -417,7 +420,7 @@ export function reconcileTabs(s, tabs, bindings = {}, skip = new Set()) {
       b[tid] = { id: existing, url: nu, title };
       continue;
     }
-    const id = addLink(s, { title: title || url, url }, TODAY);
+    const id = addLink(s, { title: title || url, url }, TODAY, insertAt++);
     keep.set(nu, id);
     b[tid] = { id, url: nu, title };
   }

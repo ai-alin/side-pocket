@@ -1,6 +1,5 @@
-/* Arc 侧边栏 · 浮动玻璃 + 树形连线
- * 贴边浮层模式（html.overlay）下，页面本身透明，磨砂玻璃由 overlay.js 在宿主页面里绘制；
- * 系统侧栏 / 弹窗模式下没有网页可透，用不透明底色。
+/* Arc 侧边栏 · 树形连线
+ * 放在 Chrome 侧边栏里，没有网页可透，用不透明底色。
  */
 :root {
   color-scheme: light dark;
@@ -65,7 +64,6 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; }
 html { background: var(--solid-bg); }
-html.overlay, html.overlay body { background: transparent; }
 body {
   color: var(--fg);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -133,9 +131,6 @@ img { -webkit-user-drag: none; pointer-events: none; }
 }
 .icon-btn:hover { background: var(--hover); color: var(--fg); }
 .icon-btn svg { width: 16px; height: 16px; }
-html:not(.overlay) #toggle-collapse { display: none; }
-#toggle-collapse .ico-collapse, html.pinned #toggle-collapse .ico-pin { display: none; }
-html.pinned #toggle-collapse .ico-collapse { display: block; }
 
 .scroll-area {
   flex: 1;
@@ -204,7 +199,7 @@ html.pinned #toggle-collapse .ico-collapse { display: block; }
 .tile:hover { background: var(--tile-hover); }
 .tile:active { transform: scale(0.97); }
 .tile img { width: 20px; height: 20px; border-radius: 5px; }
-.tile.open::after, .rail-item.open::after {
+.tile.open::after {
   content: "";
   position: absolute;
   bottom: 5px;
@@ -439,92 +434,32 @@ body.is-dragging .folder-children-wrap, body.is-dragging .tile { transition: non
   box-shadow: var(--menu-shadow);
 }
 .settings-title { margin: 0 0 6px; font-size: 11.5px; font-weight: 650; color: var(--muted); }
-.settings-title-sub { margin-top: 12px; }
-.settings-opt { display: flex; align-items: flex-start; gap: 10px; padding: 8px; border-radius: 9px; cursor: pointer; }
-.settings-opt:hover { background: var(--hover); }
-.settings-opt input { margin-top: 3px; accent-color: var(--accent); }
-.settings-check { margin-top: 4px; border-top: 1px solid var(--line); border-radius: 0 0 9px 9px; padding-top: 10px; }
-.settings-opt strong { display: block; font-size: 13px; font-weight: 600; }
-.settings-opt small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); }
-.settings-side-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.side-pill {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
+.shortcut-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 4px; font-size: 13px; }
+.shortcut-key {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--field);
+  box-shadow: inset 0 -1px 0 var(--line);
+  font: 600 12.5px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: 0.04em;
+}
+.shortcut-key.warn { color: var(--warn); letter-spacing: 0; }
+.settings-btn {
+  width: 100%;
+  margin-top: 8px;
   padding: 7px 8px;
+  border: none;
   border-radius: 9px;
   background: var(--field);
+  color: inherit;
+  font: inherit;
   font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
 }
-.side-pill input { margin: 0; accent-color: var(--accent); }
+.settings-btn:hover { background: var(--hover); }
 .settings-note { margin: 10px 4px 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
-
-/* ---------- 收起：52px 图标胶囊 ---------- */
-/* 收起：内容先快速淡出，面板再变窄，图标最后出现 */
-html.is-collapsed .full-view {
-  opacity: 0;
-  transform: translateX(-10px);
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 90ms ease, transform 90ms ease, visibility 0s linear 90ms;
-}
-html[data-side="right"].is-collapsed .full-view { transform: translateX(10px); }
-.rail-view {
-  position: fixed;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 52px;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 0 10px;
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 80ms ease, visibility 0s linear 80ms;
-}
-/* 居右时胶囊显示的是 iframe 的右侧 52px */
-html[data-side="right"] .rail-view { left: auto; right: 0; }
-html.is-collapsed:not([data-collapse-style="full-hide"]) .rail-view {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-  transition: opacity 140ms ease 110ms, visibility 0s;
-}
-/* 换页时侧栏重新加载：数据就绪前不显示，避免图标一个个蹦出来 */
-html.overlay:not(.ready) .rail-view, html.overlay:not(.ready) .full-view { opacity: 0 !important; transition: none !important; }
-.rail-group, .rail-scroll { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; }
-.rail-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 2px 0; scrollbar-width: none; }
-.rail-scroll::-webkit-scrollbar { display: none; }
-.rail-divider { width: 22px; height: 1px; margin: 2px 0; flex: none; background: var(--line); }
-.rail-btn, .rail-item {
-  position: relative;
-  width: 36px;
-  height: 36px;
-  flex: none;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: none;
-  border-radius: 10px;
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
-  transition: background 120ms ease, transform 100ms ease;
-}
-.rail-btn:hover, .rail-item:hover { background: var(--hover); color: var(--fg); }
-.rail-btn:active, .rail-item:active { transform: scale(0.95); }
-.rail-btn svg { width: 16px; height: 16px; }
-.rail-item img { width: 18px; height: 18px; border-radius: 4px; }
-.rail-item.pinned-ico { background: var(--tile); box-shadow: inset 0 0 0 1px var(--tile-ring); }
-.rail-item.active { background: var(--active); box-shadow: var(--active-shadow); }
-.rail-item:not(.open) img { opacity: 0.85; filter: saturate(0.6); }
+.settings-note.warn { margin-top: 2px; color: var(--warn); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }

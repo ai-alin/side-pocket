@@ -7,19 +7,6 @@
   <link rel="stylesheet" href="sidepanel.css" />
 </head>
 <body>
-  <!-- 收起后的 52px 图标胶囊 -->
-  <aside id="railView" class="rail-view" aria-label="图标栏">
-    <button id="rail-expand" class="rail-btn" type="button" title="展开侧边栏" aria-label="展开侧边栏">
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v10" stroke="currentColor" stroke-width="1.4"/></svg>
-    </button>
-    <div id="rail-pinned" class="rail-group"></div>
-    <div id="rail-divider" class="rail-divider"></div>
-    <div id="rail-tabs" class="rail-scroll"></div>
-    <button id="rail-new-tab" class="rail-btn" type="button" title="新建标签页" aria-label="新建标签页">
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-    </button>
-  </aside>
-
   <!-- 展开后的完整面板 -->
   <main id="fullView" class="full-view">
     <header class="top-bar">
@@ -27,10 +14,8 @@
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.6" stroke="currentColor" stroke-width="1.6"/><path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         <input id="search" type="search" placeholder="搜索收藏和标签" autocomplete="off" spellcheck="false" aria-label="搜索收藏和标签" />
       </label>
-      <button id="toggle-collapse" class="icon-btn" type="button" title="固定侧边栏（不自动收起）" aria-label="固定侧边栏（不自动收起）">
-        <!-- 预览时：固定（图钉）；固定时：收起（侧栏图标） -->
-        <svg class="ico-pin" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M9.6 2.2 13.8 6.4l-1.5.4-2.6 2.6.2 2.8-1.2 1.2-2.4-2.4-3 3M5.1 7.1 4 8.3l1.2 1.2M5.1 7.1l2.6-2.6.4-1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <svg class="ico-collapse" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v10" stroke="currentColor" stroke-width="1.4"/></svg>
+      <button id="toggle-collapse" class="icon-btn" type="button" title="关闭侧边栏" aria-label="关闭侧边栏">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v10" stroke="currentColor" stroke-width="1.4"/></svg>
       </button>
     </header>
 
@@ -61,11 +46,12 @@
             <span id="tab-count" class="num"></span>
             <button id="clear-today" class="sec-act" type="button" title="清除本机没有打开的条目。别的设备上还开着的，会在那台设备上重新出现。" hidden>清除未打开</button>
           </header>
-          <div id="tabs" class="tree"></div>
+          <!-- 新打开的网页出现在列表最上面，所以新建按钮也放在最上面 -->
           <button id="new-tab" class="row ghost-row" type="button">
             <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
             <span class="title">新建标签页</span>
           </button>
+          <div id="tabs" class="tree"></div>
         </section>
       </div>
     </div>
@@ -79,42 +65,15 @@
   </main>
 
   <div id="settings-pop" class="settings-pop" hidden>
-    <div class="settings-title">收起方式</div>
-    <label class="settings-opt">
-      <input type="radio" name="collapseMode" value="icon-rail" />
-      <span>
-        <strong>图标收起</strong>
-        <small>收起时只显示网页图标，悬停或点右上角展开</small>
-      </span>
-    </label>
-    <label class="settings-opt">
-      <input type="radio" name="collapseMode" value="full-hide" />
-      <span>
-        <strong>完全隐藏</strong>
-        <small>收起时完全隐藏，鼠标停在屏幕边缘时浮出</small>
-      </span>
-    </label>
-    <label class="settings-opt settings-check">
-      <input id="hover-expand" type="checkbox" />
-      <span>
-        <strong>鼠标停留时自动展开</strong>
-        <small>关掉后，图标栏只在点击顶部按钮时展开</small>
-      </span>
-    </label>
-
-    <div class="settings-title settings-title-sub">显示位置</div>
-    <div class="settings-side-row">
-      <label class="side-pill">
-        <input type="radio" name="sidebarSide" value="left" />
-        <span>居左</span>
-      </label>
-      <label class="side-pill">
-        <input type="radio" name="sidebarSide" value="right" />
-        <span>居右</span>
-      </label>
+    <div class="settings-title">快捷键</div>
+    <div class="shortcut-row">
+      <span>打开 / 关闭侧边栏</span>
+      <kbd id="shortcut-key" class="shortcut-key"></kbd>
     </div>
+    <p id="shortcut-hint" class="settings-note warn" hidden>快捷键可能被别的扩展占用了，点下面的按钮重新设置。</p>
+    <button id="edit-shortcut" class="settings-btn" type="button">修改快捷键</button>
 
-    <p class="settings-note">按 Option+S（Windows 上是 Alt+S）固定展开或收起侧边栏，可在 chrome://extensions/shortcuts 修改。新标签页、chrome:// 等内部页无法显示浮动侧栏，点扩展图标会改用系统侧栏打开。</p>
+    <p class="settings-note">点工具栏上的扩展图标也可以打开或关闭侧边栏。侧边栏放左边还是右边，在 Chrome 设置 → 外观 → 侧边栏位置里选。</p>
   </div>
 
   <div id="drop-line" class="drop-line" hidden></div>

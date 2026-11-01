@@ -1,35 +1,18 @@
 // 侧栏界面：只负责显示和把用户操作发给后台。
 // 数据由 background.js 维护在 storage.local；后台改完数据会更新 storage.session 里的 VIEW_KEY，
-// 这里收到通知后重新读取。每个网页都有一个贴边栏 iframe，页面在后台（不可见）时不刷新，
-// 切回来时再补一次，所以开很多标签也不会每个都在干活。
+// 这里收到通知后重新读取。侧栏放在 Chrome 侧边栏里，每个窗口一个。
 
 import * as M from './model.js';
 import { LOCAL_KEY, VIEW_KEY } from './store.js';
-import {
-  getCollapseMode,
-  setCollapseMode,
-  getSidebarSide,
-  setSidebarSide,
-  getHoverExpand,
-  setHoverExpand,
-  HOVER_KEY,
-  isFullHideMode,
-  MODE_KEY,
-  SIDE_KEY,
-  SIDE_RIGHT,
-} from './settings.js';
 
 const $ = (sel) => document.querySelector(sel);
 const SELF_PREFIX = chrome.runtime.getURL('');
-const PAGE_MODE = new URLSearchParams(location.search).get('mode') || 'sidepanel';
-const IS_POPUP = PAGE_MODE === 'popup';
-const IS_OVERLAY = PAGE_MODE === 'overlay';
-if (IS_OVERLAY) document.documentElement.classList.add('overlay', 'is-collapsed');
 
 let state = M.emptyState();
 let v = M.view(state);
 let tabs = []; // 所有窗口的普通标签
 let winId = null; // 侧栏所在窗口
+let activeUrl = ''; // 「当前标签」的网址，用来高亮
 let renaming = null; // 正在重命名的节点 id
 let drag = null; // { id }
 let inflight = 0; // 已在本地生效、后台还没确认的操作数
@@ -102,7 +85,16 @@ function findTab(url) {
   return hits.find((t) => t.windowId === winId) || hits[0] || null;
 }
 
-const openCls = (t) => (t ? ' open' : '') + (t?.active && t.windowId === winId ? ' active' : '');
+/**
+ * 贴边栏里，「当前标签」就是侧栏所在的这个标签页：看得见这个侧栏时它一定是当前标签，
+ * 不用等标签列表刷新，切过来的第一帧高亮就是对的。其他模式用所在窗口的活动标签。
+ */
+function updateActiveUrl() {
+  const t = tabs.find((x) => x.active && x.windowId === winId);
+  activeUrl = t ? M.normUrl(t.url || t.pendingUrl) : '';
+}
+
+const openCls = (t, url) => (t ? ' open' : '') + (activeUrl && M.normUrl(url) === activeUrl ? ' active' : '');
 
 async function copyText(text) {
   try {
@@ -156,10 +148,6 @@ async function loadState() {
 
 async function resolveWindowId() {
   try {
-    if (IS_OVERLAY) {
-      const t = await chrome.tabs.getCurrent();
-      if (t?.windowId != null) return t.windowId;
-    }
     const cur = await chrome.windows.getCurrent();
     if (cur?.type === 'normal') return cur.id;
     const last = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
@@ -170,8 +158,9 @@ async function resolveWindowId() {
   return tabs[0]?.windowId ?? null;
 }
 
-async function refresh() {
-  if (document.hidden || inflight) {
+/** force：侧栏暂时看不见时也刷新（第一次加载） */
+async function refresh({ force = false } = {}) {
+  if (inflight || (document.hidden && !force)) {
     stale = true;
     return;
   }
@@ -179,8 +168,8 @@ async function refresh() {
   const [all, , wid] = await Promise.all([chrome.tabs.query({}), loadState(), winId ?? resolveWindowId()]);
   tabs = all.filter((t) => !isSelf(t));
   winId = wid;
+  updateActiveUrl();
   render();
-  document.documentElement.classList.add('ready');
 }
 
 let refreshTimer;
@@ -255,7 +244,6 @@ function render() {
       renderSaved();
       renderTabs();
     }
-    renderRail();
   } finally {
     rendering = false;
   }
@@ -272,46 +260,68 @@ function render() {
   }
 }
 
+/* ---------- 增量更新 DOM ---------- */
+// 每次渲染先生成新节点，再和页面上已有的对比，只改有变化的地方：
+// 同一个条目（data-id / data-folder）复用原来的元素，网站图标不会重新加载，
+// 鼠标下面的那一行也不会因为被换掉而闪一下悬停效果；拖拽中的元素也不会被换掉。
+
+function keyOf(n) {
+  if (n.nodeType !== 1) return null;
+  const id = n.getAttribute('data-id') ?? n.getAttribute('data-folder');
+  return id == null ? null : n.nodeName + '#' + id;
+}
+
+/** 输入框（重命名）不复用：它带着自己的事件和草稿，render() 会另外恢复内容和光标 */
+const canPatch = (o, n) => o.nodeType === n.nodeType && o.nodeName === n.nodeName && o.nodeName !== 'INPUT';
+
+function patchNode(o, n) {
+  if (o.nodeType !== 1) {
+    if (o.data !== n.data) o.data = n.data;
+    return o;
+  }
+  for (const a of [...o.attributes]) if (!n.hasAttribute(a.name)) o.removeAttribute(a.name);
+  for (const a of n.attributes) if (o.getAttribute(a.name) !== a.value) o.setAttribute(a.name, a.value);
+  patchChildren(o, [...n.childNodes]);
+  return o;
+}
+
+/** 把 parent 的子节点更新成 next：有 key 的按 key 对应，没 key 的按出现顺序对应 */
+function patchChildren(parent, next) {
+  const keyed = new Map();
+  const loose = [];
+  for (const o of parent.childNodes) {
+    const k = keyOf(o);
+    if (k) keyed.set(k, o);
+    else loose.push(o);
+  }
+  let li = 0;
+  const out = next.map((n) => {
+    const k = keyOf(n);
+    let o = null;
+    if (k) {
+      o = keyed.get(k) || null;
+      keyed.delete(k);
+    } else if (li < loose.length) {
+      o = loose[li++];
+    }
+    return o && canPatch(o, n) ? patchNode(o, n) : n;
+  });
+  out.forEach((node, i) => {
+    if (parent.childNodes[i] !== node) parent.insertBefore(node, parent.childNodes[i] || null);
+  });
+  while (parent.childNodes.length > out.length) parent.lastChild.remove();
+}
+
 const favImg = (url, cls, size) => el('img', { class: cls, src: favicon(url, size), alt: '', draggable: 'false' });
 
-function railIcons(list, extraCls = '') {
-  return list.map((n) =>
-    el(
-      'button',
-      { type: 'button', class: 'rail-item' + extraCls + openCls(findTab(n.url)), title: displayTitle(n), 'data-id': n.id },
-      favImg(n.url, '', 64),
-    ),
-  );
-}
-
-/** 收起后的图标栏只放置顶、开着的收藏和今日，不把所有收藏都堆进来 */
-function renderRail() {
-  const pinBox = $('#rail-pinned');
-  const tabBox = $('#rail-tabs');
-  const pinned = v.order[M.PINNED].map((id) => state.nodes[id]).filter((n) => n.type === 'link');
-  pinBox.replaceChildren(...railIcons(pinned, ' pinned-ico'));
-  const openSaved = [];
-  const collect = (parent) => {
-    for (const id of v.order[parent] || []) {
-      const n = state.nodes[id];
-      if (n.type === 'folder') collect(id);
-      else if (findTab(n.url)) openSaved.push(n);
-    }
-  };
-  collect(M.ROOT);
-  const today = v.order[M.TODAY].map((id) => state.nodes[id]);
-  const rest = [...openSaved, ...today];
-  $('#rail-divider').hidden = !pinned.length || !rest.length;
-  tabBox.replaceChildren(...railIcons(rest));
-}
-
 function renderPinned() {
-  $('#pinned').replaceChildren(
-    ...v.order[M.PINNED].map((id) => {
+  patchChildren(
+    $('#pinned'),
+    v.order[M.PINNED].map((id) => {
       const n = state.nodes[id];
       return el(
         'div',
-        { class: 'tile' + openCls(findTab(n.url)), title: displayTitle(n), draggable: 'true', 'data-id': id, role: 'button', tabindex: '0' },
+        { class: 'tile' + openCls(findTab(n.url), n.url), title: displayTitle(n), draggable: 'true', 'data-id': id, role: 'button', tabindex: '0' },
         favImg(n.url, '', 64),
       );
     }),
@@ -353,7 +363,7 @@ function renderSaved() {
     });
   const rows = walk(M.ROOT);
   if (!rows.length) rows.push(el('div', { class: 'empty' }, '还没有收藏。把「今日」里的网站拖到这里。'));
-  $('#saved').replaceChildren(...rows);
+  patchChildren($('#saved'), rows);
 }
 
 function titleNode(n) {
@@ -382,7 +392,7 @@ function linkRow(n) {
   const t = findTab(n.url);
   return el(
     'div',
-    { class: 'row link' + openCls(t), draggable: 'true', 'data-id': n.id, title: n.url },
+    { class: 'row link' + openCls(t, n.url), draggable: 'true', 'data-id': n.id, title: n.url },
     favImg(n.url, 'fav'),
     titleNode(n),
     el(
@@ -425,7 +435,7 @@ function renderTabs() {
     const n = state.nodes[id];
     return el(
       'div',
-      { class: 'row tab' + openCls(findTab(n.url)), draggable: 'true', 'data-id': n.id, title: n.url },
+      { class: 'row tab' + openCls(findTab(n.url), n.url), draggable: 'true', 'data-id': n.id, title: n.url },
       favImg(n.url, 'fav'),
       titleNode(n),
       el(
@@ -438,7 +448,7 @@ function renderTabs() {
     );
   });
   if (!rows.length) rows.push(el('div', { class: 'empty' }, '打开的网页会出现在这里，并同步到你的其他设备'));
-  $('#tabs').replaceChildren(...rows);
+  patchChildren($('#tabs'), rows);
 }
 
 /* ---------- 搜索 ---------- */
@@ -472,14 +482,14 @@ function renderResults() {
   const rows = results.map((n, i) =>
     el(
       'div',
-      { class: 'row link' + openCls(findTab(n.url)) + (i === selected ? ' selected' : ''), 'data-id': n.id, title: n.url },
+      { class: 'row link' + openCls(findTab(n.url), n.url) + (i === selected ? ' selected' : ''), 'data-id': n.id, title: n.url },
       favImg(n.url, 'fav'),
       el('span', { class: 'title' }, displayTitle(n)),
       el('span', { class: 'where' }, whereOf(n.id)),
     ),
   );
   if (!rows.length) rows.push(el('div', { class: 'empty' }, `没有找到「${query}」。试试网址里的关键词。`));
-  $('#results').replaceChildren(...rows);
+  patchChildren($('#results'), rows);
 }
 
 function setQuery(q) {
@@ -490,12 +500,6 @@ function setQuery(q) {
 }
 
 /* ---------- 菜单 ---------- */
-
-/** 告诉宿主页面（overlay.js）侧栏里发生了什么；只在贴边浮层模式下有意义 */
-function postToHost(type, on, extra = {}) {
-  if (!IS_OVERLAY) return;
-  window.parent.postMessage({ source: 'arc-sidebar', type, ...(on == null ? {} : { on: !!on }), ...extra }, '*');
-}
 
 function showMenu(x, y, entries, row) {
   const m = $('#menu');
@@ -510,7 +514,6 @@ function showMenu(x, y, entries, row) {
   m.hidden = false;
   document.querySelectorAll('.menu-open').forEach((r) => r.classList.remove('menu-open'));
   row?.classList.add('menu-open');
-  postToHost('menu', true);
   const r = m.getBoundingClientRect();
   m.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 4)) + 'px';
   m.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 4)) + 'px';
@@ -545,7 +548,6 @@ function hideMenu() {
   if ($('#menu').hidden) return;
   $('#menu').hidden = true;
   document.querySelectorAll('.menu-open').forEach((r) => r.classList.remove('menu-open'));
-  postToHost('menu', false);
 }
 
 function nodeMenu(id) {
@@ -610,12 +612,8 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('input.rename')) return;
   if (e.target.closest('#new-folder')) return newFolder();
   if (e.target.closest('#clear-today')) return clearToday();
-  if (e.target.closest('#new-tab, #rail-new-tab')) return chrome.tabs.create({ windowId: winId ?? undefined });
-  if (e.target.closest('#rail-expand')) return postToHost('request-pin');
-  if (e.target.closest('#toggle-collapse')) {
-    return postToHost(document.documentElement.classList.contains('pinned') ? 'request-collapse' : 'request-pin');
-  }
-  if (e.target.closest('#railView')) postToHost('activity'); // 点了胶囊上的图标，别再自动展开
+  if (e.target.closest('#new-tab')) return chrome.tabs.create({ windowId: winId ?? undefined });
+  if (e.target.closest('#toggle-collapse')) return closeSidePanel();
   const { row, node } = targetOf(e);
   if (!node) return;
   const act = e.target.closest('[data-act]')?.dataset.act;
@@ -846,94 +844,33 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && stale) refresh();
 });
 
-/* ---------- 告诉宿主：鼠标在不在侧栏里、是否需要保持展开 ---------- */
-
-if (IS_OVERLAY) {
-  // 鼠标在侧栏里移动时持续（节流）报告，宿主即使漏掉一次也能恢复。
-  // 只听 mousemove：面板展开 / 收起改变布局后，Chrome 会按这个 iframe 记住的旧鼠标位置
-  // 补发 mouseover / mouseout（鼠标其实早已离开），这些不能当成「鼠标在侧栏里」。
-  let inside = false;
-  let last = 0;
-  window.addEventListener('message', (ev) => {
-    // 宿主判定鼠标已离开：下次一动就立刻报告
-    if (ev.source === window.parent && ev.data?.source === 'arc-sidebar-host' && ev.data.type === 'left') inside = false;
-  });
-  document.addEventListener(
-    'mousemove',
-    (e) => {
-      const now = Date.now();
-      if (inside && now - last < 200) return;
-      inside = true;
-      last = now;
-      postToHost('hover', true, { buttons: e.buttons, t: now });
-    },
-    { passive: true },
-  );
-  document.addEventListener('mouseout', (e) => {
-    if (e.relatedTarget || !inside) return; // relatedTarget 为空 = 鼠标离开了整个侧栏
-    inside = false;
-    postToHost('hover', false);
-  });
-  const isTextInput = (el) => el?.matches?.('input[type=search], input.rename');
-  document.addEventListener('focusin', (e) => isTextInput(e.target) && postToHost('focus', true));
-  document.addEventListener('focusout', (e) => isTextInput(e.target) && postToHost('focus', false));
-  document.addEventListener('dragstart', () => postToHost('drag', true));
-  document.addEventListener('dragend', () => postToHost('drag', false));
-  document.addEventListener('keydown', (e) => {
-    // Esc：先关菜单 / 清搜索；都没有时收起侧栏
-    if (e.key !== 'Escape' || e.defaultPrevented || e.target.closest?.('input')) return;
-    if (!$('#menu').hidden || !$('#settings-pop').hidden) return;
-    postToHost('request-collapse');
-  });
-}
-
 /* ---------- 设置 ---------- */
 
+/** 设置里显示当前快捷键；没设置（比如被别的扩展占了）时明确提示 */
 async function refreshSettingsUi() {
-  const [mode, side, hover] = await Promise.all([
-    getCollapseMode(chrome.storage.sync),
-    getSidebarSide(chrome.storage.sync),
-    getHoverExpand(chrome.storage.sync),
-  ]);
-  $('#hover-expand').checked = hover;
-  document.querySelectorAll('input[name=collapseMode]').forEach((x) => (x.checked = x.value === mode));
-  document.querySelectorAll('input[name=sidebarSide]').forEach((x) => (x.checked = x.value === side));
-  document.documentElement.dataset.side = side;
-  document.documentElement.dataset.collapseStyle = isFullHideMode(mode) ? 'full-hide' : 'icon-rail';
+  const cmds = await chrome.commands.getAll().catch(() => []);
+  const key = cmds.find((c) => c.name === '_execute_action')?.shortcut || '';
+  const el = $('#shortcut-key');
+  el.textContent = key || '未设置';
+  el.classList.toggle('warn', !key);
+  $('#shortcut-hint').hidden = !!key;
+}
+
+/** 关闭 Chrome 侧边栏（Chrome 标题栏上的 ✕、再按一次快捷键也可以） */
+function closeSidePanel() {
+  if (chrome.sidePanel.close && winId != null) chrome.sidePanel.close({ windowId: winId }).catch(() => window.close());
+  else window.close();
 }
 
 function setupChromeUi() {
-  const gear = $('#open-settings');
   const pop = $('#settings-pop');
-
-  if (IS_POPUP) {
-    document.body.classList.add('is-popup');
-  } else if (IS_OVERLAY) {
-    document.body.classList.add('is-overlay');
-    window.addEventListener('message', (ev) => {
-      if (ev.source !== window.parent) return;
-      const d = ev.data;
-      if (!d || d.source !== 'arc-sidebar-host' || d.type !== 'state') return;
-      const root = document.documentElement;
-      root.classList.toggle('is-collapsed', !!d.collapsed);
-      root.classList.toggle('pinned', !!d.pinned);
-      $('#toggle-collapse').title = d.pinned ? '收起侧边栏' : '固定侧边栏（不自动收起）';
-      $('#toggle-collapse').setAttribute('aria-label', $('#toggle-collapse').title);
-      if (d.collapsed) hideMenu();
-      if (d.mode === 'full-hide' || d.mode === 'icon-rail') document.documentElement.dataset.collapseStyle = d.mode;
-      if (d.side === 'left' || d.side === 'right') document.documentElement.dataset.side = d.side;
-    });
-    postToHost('ready');
-  }
-
   const setPop = (open) => {
     if (pop.hidden === !open) return;
     pop.hidden = !open;
-    postToHost('settings', open);
     if (open) refreshSettingsUi();
   };
 
-  gear.addEventListener('click', (e) => {
+  $('#open-settings').addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
     setPop(pop.hidden);
@@ -941,54 +878,13 @@ function setupChromeUi() {
   pop.addEventListener('click', (e) => e.stopPropagation());
   document.addEventListener('click', () => setPop(false));
 
-  pop.querySelectorAll('input[name=collapseMode]').forEach((input) => {
-    input.addEventListener('change', async () => {
-      if (!input.checked) return;
-      const mode = await setCollapseMode(chrome.storage.sync, input.value);
-      setPop(false);
-      const label = isFullHideMode(mode) ? '完全隐藏（移到边缘唤出）' : '图标收起（仅显示网页图标）';
-      if (IS_OVERLAY) return showStatus(`已切换为${label}`, 'info', 2500);
-      // 从系统侧栏 / 弹窗里切换：确认当前网页能不能贴边
-      try {
-        const res = await chrome.runtime.sendMessage({ type: 'arc-sidebar:activate-auto' });
-        const r = res?.result;
-        if (r && !r.activeInjected) {
-          const isFile = String(r.activeUrl || '').startsWith('file:');
-          showStatus(
-            isFile
-              ? '本地文件页请在 chrome://extensions 详情中开启「允许访问文件网址」以启用贴边栏；其他网页已生效。'
-              : '当前页面受浏览器限制无法贴边；切到普通网页即可。点扩展图标可在系统侧栏打开。',
-            'warn',
-            6000,
-          );
-          return;
-        }
-      } catch (e) {
-        console.warn('[arc-sidebar]', e);
-      }
-      showStatus(`已切换为${label}`, 'info', 2500);
-    });
+  // 扩展不能自己改快捷键，只能打开 Chrome 的快捷键设置页
+  $('#edit-shortcut').addEventListener('click', () => {
+    setPop(false);
+    chrome.tabs.create({ url: 'chrome://extensions/shortcuts', windowId: winId ?? undefined });
   });
-
-  $('#hover-expand').addEventListener('change', async (e) => {
-    const on = await setHoverExpand(chrome.storage.sync, e.target.checked);
-    showStatus(on ? '鼠标在图标栏上停一下就会展开' : '已关闭悬停展开，点图标栏顶部的按钮展开', 'info', 2500);
-  });
-
-  pop.querySelectorAll('input[name=sidebarSide]').forEach((input) => {
-    input.addEventListener('change', async () => {
-      if (!input.checked) return;
-      setPop(false);
-      const side = await setSidebarSide(chrome.storage.sync, input.value);
-      await refreshSettingsUi();
-      showStatus(`已切换至网页${side === SIDE_RIGHT ? '右侧' : '左侧'}`, 'info', 2000);
-    });
-  });
-
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'sync' && (changes[MODE_KEY] || changes[SIDE_KEY] || changes[HOVER_KEY])) refreshSettingsUi();
-  });
-  refreshSettingsUi();
+  // 从设置页改完回来，侧栏重新拿到焦点时更新显示
+  window.addEventListener('focus', () => !pop.hidden && refreshSettingsUi());
 }
 
 async function init() {
@@ -999,7 +895,8 @@ async function init() {
     // 新版本第一次运行：等后台完成迁移 / 首次对账
     await chrome.runtime.sendMessage({ type: 'arc:sync' }).catch((e) => console.warn('[arc-sidebar]', e));
   }
-  await refresh();
+  // 在后台打开的网页也先画一次，切过来时直接有内容，不会先空白再出现
+  await refresh({ force: true });
 }
 
 init();

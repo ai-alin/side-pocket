@@ -174,3 +174,31 @@ test('旧格式迁移', () => {
   assert.deepEqual(titles(s, M.TODAY), ['T']);
   assert.equal(s.nodes.ffff1.collapsed, true);
 });
+
+test('今日：新打开的网页放在最上面', () => {
+  const s = M.emptyState();
+  let { bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com', 'A'), tab(2, 'https://b.com', 'B')]);
+  assert.deepEqual(titles(s, M.TODAY), ['A', 'B']); // 同一批：按标签栏顺序
+  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com', 'A'), tab(2, 'https://b.com', 'B'), tab(3, 'https://c.com', 'C')], bindings));
+  assert.deepEqual(titles(s, M.TODAY), ['C', 'A', 'B']); // 新来的在最上面，已有的不动
+  // 新标签在标签栏里的位置不影响：开在最左边也一样放最上面
+  ({ bindings } = M.reconcileTabs(s, [tab(4, 'https://d.com', 'D', { index: 0 }), tab(1, 'https://a.com', 'A'), tab(2, 'https://b.com', 'B'), tab(3, 'https://c.com', 'C')], bindings));
+  assert.deepEqual(titles(s, M.TODAY), ['D', 'C', 'A', 'B']);
+});
+
+test('今日：一批新网页作为一组放在最上面，组内保持标签栏顺序', () => {
+  const s = M.emptyState();
+  let { bindings } = M.reconcileTabs(s, [tab(1, 'https://old.com', 'Old')]);
+  const batch = [tab(1, 'https://old.com', 'Old'), tab(2, 'https://x.com', 'X'), tab(3, 'https://y.com', 'Y'), tab(4, 'https://z.com', 'Z')];
+  ({ bindings } = M.reconcileTabs(s, batch, bindings));
+  assert.deepEqual(titles(s, M.TODAY), ['X', 'Y', 'Z', 'Old']);
+});
+
+test('今日：标签里跳到别的网址，条目位置不变', () => {
+  const s = M.emptyState();
+  let { bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com', 'A'), tab(2, 'https://b.com', 'B')]);
+  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com', 'A'), tab(2, 'https://b.com', 'B'), tab(3, 'https://c.com', 'C')], bindings));
+  assert.deepEqual(titles(s, M.TODAY), ['C', 'A', 'B']);
+  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://a2.com', 'A2'), tab(2, 'https://b.com', 'B'), tab(3, 'https://c.com', 'C')], bindings));
+  assert.deepEqual(titles(s, M.TODAY), ['C', 'A2', 'B']);
+});

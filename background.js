@@ -6,11 +6,9 @@
 
 import * as M from './model.js';
 import { createEngine, VIEW_KEY } from './store.js';
-import { MODE_KEY, normalizeMode } from './settings.js';
 
 const SELF_PREFIX = chrome.runtime.getURL('');
 const BIND_KEY = 'tabBindings'; // storage.session：tabId -> 今日条目，浏览器重启即清空（tab id 也会变）
-const NATIVE_KEY = 'nativePanelOpen';
 const FLUSH_ALARM = 'arc-flush';
 const RECONCILE_DELAY = 400;
 const FLUSH_DELAY = 1500;
@@ -25,10 +23,6 @@ const closing = new Set(); // 正在被本扩展关闭的 tabId
 let chain = Promise.resolve();
 
 const isSelf = (t) => (t.url || t.pendingUrl || '').startsWith(SELF_PREFIX);
-
-function isInjectableUrl(u) {
-  return typeof u === 'string' && (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('file://'));
-}
 
 /* ---------- 串行队列 ---------- */
 
@@ -111,7 +105,6 @@ chrome.tabs.onCreated.addListener(() => reconcileSoon());
 chrome.tabs.onAttached.addListener(() => reconcileSoon());
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (info.url || info.title || info.status === 'complete') reconcileSoon();
-  if (info.status === 'complete' && isInjectableUrl(tab.url)) closeNativeFallback();
 });
 
 chrome.tabs.onReplaced.addListener((added, removed) =>
@@ -255,85 +248,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   };
   if (msg.type === 'arc:op' && fromExtPage) return reply(run(() => handleOp(msg.op, msg.args || {})));
   if (msg.type === 'arc:sync' && fromExtPage) return reply(run(reconcileNow));
-  if (msg.type === 'arc-sidebar:activate-auto') return reply(ensureOverlayInAllTabs());
   return false;
 });
 
-/* ---------- 贴边栏注入与原生侧栏回退 ---------- */
+/* ---------- 侧栏放在 Chrome 侧边栏里 ---------- */
 
-async function disableNativeSidePanel() {
-  await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {});
-  await chrome.sidePanel.setOptions({ enabled: false }).catch(() => {});
-}
-
-/** 给已经打开的标签页注入贴边栏（manifest 的内容脚本只对之后加载的页面生效） */
-async function ensureOverlayInAllTabs() {
-  let activeInjected = false;
-  let activeUrl = '';
-  const all = await chrome.tabs.query({});
-  const active = all.find((t) => t.active && !isSelf(t));
-  if (active) activeUrl = active.url || active.pendingUrl || '';
-  for (const t of all) {
-    if (!t.id || !isInjectableUrl(t.url || t.pendingUrl)) continue;
-    try {
-      await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['overlay.js'] });
-      if (active && t.id === active.id) activeInjected = true;
-    } catch (e) {
-      // 商店页、无文件访问权限的 file:// 等注入不了，属正常情况
-      if (active && t.id === active.id) console.info('[arc-sidebar] 当前页无法注入', e?.message);
-    }
-  }
-  return { activeInjected, activeUrl };
-}
-
-async function normalizeStoredMode() {
-  const d = await chrome.storage.sync.get(MODE_KEY);
-  const m = normalizeMode(d[MODE_KEY]);
-  if (d[MODE_KEY] !== m) await chrome.storage.sync.set({ [MODE_KEY]: m });
+/** 点工具栏图标 / 按快捷键：由 Chrome 打开或关闭侧边栏，所有页面都一样，包括新标签页和 chrome:// 页面 */
+async function setupSidePanel() {
+  await chrome.sidePanel.setOptions({ enabled: true, path: 'sidepanel.html' }).catch(() => {});
+  await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-  await disableNativeSidePanel();
-  await normalizeStoredMode().catch((e) => console.warn('[arc-sidebar]', e));
-  await ensureOverlayInAllTabs();
+  await setupSidePanel();
+  // 0.5.x / 0.6.0 浮出侧栏用过的本机状态，用不到了
+  await chrome.storage.local.remove(['ui.pinned', 'nativePanelOpen', 'ui.peekHandoff']).catch(() => {});
 });
-chrome.runtime.onStartup.addListener(() => disableNativeSidePanel());
-
-// 点扩展图标：普通网页 → 贴边栏展开/收起；新标签页、chrome:// 等 → 原生侧栏（失败再用弹窗）
-chrome.action.onClicked.addListener(async (tab) => {
-  const url = tab?.url || tab?.pendingUrl || '';
-  if (tab?.id && isInjectableUrl(url)) {
-    try {
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['overlay.js'] });
-      await chrome.tabs.sendMessage(tab.id, { type: 'arc-sidebar:toggle' });
-      return;
-    } catch (e) {
-      console.info('[arc-sidebar] 贴边栏不可用，改用回退', e?.message);
-    }
-  }
-  openNativeFallback(tab?.windowId);
-});
-
-/** sidePanel.open 必须在用户点击的同一调用栈里发起，所以这里不 await 前面的步骤 */
-function openNativeFallback(windowId) {
-  chrome.sidePanel.setOptions({ enabled: true, path: 'sidepanel.html' }).catch(() => {});
-  chrome.sidePanel
-    .open({ windowId })
-    .then(() => chrome.storage.session.set({ [NATIVE_KEY]: true }))
-    .catch(() =>
-      chrome.windows
-        .create({ url: chrome.runtime.getURL('sidepanel.html?mode=popup'), type: 'popup', width: 380, height: 720 })
-        .catch((e) => console.warn('[arc-sidebar] 弹窗回退失败', e)),
-    );
-}
-
-/** 用户从新标签页进入普通网页后，关掉临时打开的原生侧栏，避免出现两个侧栏 */
-async function closeNativeFallback() {
-  const d = await chrome.storage.session.get(NATIVE_KEY);
-  if (!d[NATIVE_KEY]) return;
-  await chrome.storage.session.remove(NATIVE_KEY);
-  await disableNativeSidePanel();
-}
+chrome.runtime.onStartup.addListener(() => setupSidePanel());
 
 // 每次 service worker 启动：加载数据、合并云端、对账（没有变化时不会写任何东西）
 run(() => {});
