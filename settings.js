@@ -1,6 +1,7 @@
 // UI 设置：与侧栏数据分开存储，单独几个小键，可在 node 里测
 export const MODE_KEY = 'ui.collapseMode';
 export const SIDE_KEY = 'ui.sidebarSide';
+export const HOVER_KEY = 'ui.hoverExpand'; // 图标收起时，鼠标停留是否自动展开（默认开）
 
 export const MODE_ICON_RAIL = 'icon-rail'; // 图标收起（52px 纯图标窄栏）
 export const MODE_FULL_HIDE = 'full-hide'; // 完全隐藏（移出屏幕，边缘感应唤出）
@@ -46,4 +47,14 @@ export async function setSidebarSide(storageArea, side) {
   const s = normalizeSide(side);
   await storageArea.set({ [SIDE_KEY]: s });
   return s;
+}
+
+export async function getHoverExpand(storageArea) {
+  const data = await storageArea.get(HOVER_KEY);
+  return data[HOVER_KEY] !== false;
+}
+
+export async function setHoverExpand(storageArea, on) {
+  await storageArea.set({ [HOVER_KEY]: !!on });
+  return !!on;
 }

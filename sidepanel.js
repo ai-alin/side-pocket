@@ -10,6 +10,9 @@ import {
   setCollapseMode,
   getSidebarSide,
   setSidebarSide,
+  getHoverExpand,
+  setHoverExpand,
+  HOVER_KEY,
   isFullHideMode,
   MODE_KEY,
   SIDE_KEY,
@@ -173,10 +176,11 @@ async function refresh() {
     return;
   }
   stale = false;
-  const [all] = await Promise.all([chrome.tabs.query({}), loadState()]);
+  const [all, , wid] = await Promise.all([chrome.tabs.query({}), loadState(), winId ?? resolveWindowId()]);
   tabs = all.filter((t) => !isSelf(t));
-  winId = await resolveWindowId();
+  winId = wid;
   render();
+  document.documentElement.classList.add('ready');
 }
 
 let refreshTimer;
@@ -487,9 +491,10 @@ function setQuery(q) {
 
 /* ---------- 菜单 ---------- */
 
-function postToHost(type, open) {
+/** 告诉宿主页面（overlay.js）侧栏里发生了什么；只在贴边浮层模式下有意义 */
+function postToHost(type, on, extra = {}) {
   if (!IS_OVERLAY) return;
-  window.parent.postMessage({ source: 'arc-sidebar', type, ...(open == null ? {} : { open: !!open }) }, '*');
+  window.parent.postMessage({ source: 'arc-sidebar', type, ...(on == null ? {} : { on: !!on }), ...extra }, '*');
 }
 
 function showMenu(x, y, entries, row) {
@@ -606,16 +611,11 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('#new-folder')) return newFolder();
   if (e.target.closest('#clear-today')) return clearToday();
   if (e.target.closest('#new-tab, #rail-new-tab')) return chrome.tabs.create({ windowId: winId ?? undefined });
-  if (e.target.closest('#rail-expand')) {
-    postToHost('request-expand');
-    document.documentElement.classList.remove('is-collapsed');
-    return;
-  }
+  if (e.target.closest('#rail-expand')) return postToHost('request-pin');
   if (e.target.closest('#toggle-collapse')) {
-    postToHost('request-collapse');
-    document.documentElement.classList.add('is-collapsed');
-    return;
+    return postToHost(document.documentElement.classList.contains('pinned') ? 'request-collapse' : 'request-pin');
   }
+  if (e.target.closest('#railView')) postToHost('activity'); // 点了胶囊上的图标，别再自动展开
   const { row, node } = targetOf(e);
   if (!node) return;
   const act = e.target.closest('[data-act]')?.dataset.act;
@@ -846,10 +846,56 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && stale) refresh();
 });
 
+/* ---------- 告诉宿主：鼠标在不在侧栏里、是否需要保持展开 ---------- */
+
+if (IS_OVERLAY) {
+  // 鼠标在侧栏里移动时持续（节流）报告，宿主即使漏掉一次也能恢复。
+  // 只听 mousemove：面板展开 / 收起改变布局后，Chrome 会按这个 iframe 记住的旧鼠标位置
+  // 补发 mouseover / mouseout（鼠标其实早已离开），这些不能当成「鼠标在侧栏里」。
+  let inside = false;
+  let last = 0;
+  window.addEventListener('message', (ev) => {
+    // 宿主判定鼠标已离开：下次一动就立刻报告
+    if (ev.source === window.parent && ev.data?.source === 'arc-sidebar-host' && ev.data.type === 'left') inside = false;
+  });
+  document.addEventListener(
+    'mousemove',
+    (e) => {
+      const now = Date.now();
+      if (inside && now - last < 200) return;
+      inside = true;
+      last = now;
+      postToHost('hover', true, { buttons: e.buttons, t: now });
+    },
+    { passive: true },
+  );
+  document.addEventListener('mouseout', (e) => {
+    if (e.relatedTarget || !inside) return; // relatedTarget 为空 = 鼠标离开了整个侧栏
+    inside = false;
+    postToHost('hover', false);
+  });
+  const isTextInput = (el) => el?.matches?.('input[type=search], input.rename');
+  document.addEventListener('focusin', (e) => isTextInput(e.target) && postToHost('focus', true));
+  document.addEventListener('focusout', (e) => isTextInput(e.target) && postToHost('focus', false));
+  document.addEventListener('dragstart', () => postToHost('drag', true));
+  document.addEventListener('dragend', () => postToHost('drag', false));
+  document.addEventListener('keydown', (e) => {
+    // Esc：先关菜单 / 清搜索；都没有时收起侧栏
+    if (e.key !== 'Escape' || e.defaultPrevented || e.target.closest?.('input')) return;
+    if (!$('#menu').hidden || !$('#settings-pop').hidden) return;
+    postToHost('request-collapse');
+  });
+}
+
 /* ---------- 设置 ---------- */
 
 async function refreshSettingsUi() {
-  const [mode, side] = await Promise.all([getCollapseMode(chrome.storage.sync), getSidebarSide(chrome.storage.sync)]);
+  const [mode, side, hover] = await Promise.all([
+    getCollapseMode(chrome.storage.sync),
+    getSidebarSide(chrome.storage.sync),
+    getHoverExpand(chrome.storage.sync),
+  ]);
+  $('#hover-expand').checked = hover;
   document.querySelectorAll('input[name=collapseMode]').forEach((x) => (x.checked = x.value === mode));
   document.querySelectorAll('input[name=sidebarSide]').forEach((x) => (x.checked = x.value === side));
   document.documentElement.dataset.side = side;
@@ -868,7 +914,12 @@ function setupChromeUi() {
       if (ev.source !== window.parent) return;
       const d = ev.data;
       if (!d || d.source !== 'arc-sidebar-host' || d.type !== 'state') return;
-      document.documentElement.classList.toggle('is-collapsed', !!d.collapsed);
+      const root = document.documentElement;
+      root.classList.toggle('is-collapsed', !!d.collapsed);
+      root.classList.toggle('pinned', !!d.pinned);
+      $('#toggle-collapse').title = d.pinned ? '收起侧边栏' : '固定侧边栏（不自动收起）';
+      $('#toggle-collapse').setAttribute('aria-label', $('#toggle-collapse').title);
+      if (d.collapsed) hideMenu();
       if (d.mode === 'full-hide' || d.mode === 'icon-rail') document.documentElement.dataset.collapseStyle = d.mode;
       if (d.side === 'left' || d.side === 'right') document.documentElement.dataset.side = d.side;
     });
@@ -919,6 +970,11 @@ function setupChromeUi() {
     });
   });
 
+  $('#hover-expand').addEventListener('change', async (e) => {
+    const on = await setHoverExpand(chrome.storage.sync, e.target.checked);
+    showStatus(on ? '鼠标在图标栏上停一下就会展开' : '已关闭悬停展开，点图标栏顶部的按钮展开', 'info', 2500);
+  });
+
   pop.querySelectorAll('input[name=sidebarSide]').forEach((input) => {
     input.addEventListener('change', async () => {
       if (!input.checked) return;
@@ -930,16 +986,15 @@ function setupChromeUi() {
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'sync' && (changes[MODE_KEY] || changes[SIDE_KEY])) refreshSettingsUi();
+    if (area === 'sync' && (changes[MODE_KEY] || changes[SIDE_KEY] || changes[HOVER_KEY])) refreshSettingsUi();
   });
   refreshSettingsUi();
 }
 
 async function init() {
   setupChromeUi();
-  const s = await chrome.storage.session.get(VIEW_KEY);
+  const [s, has] = await Promise.all([chrome.storage.session.get(VIEW_KEY), chrome.storage.local.get(LOCAL_KEY)]);
   showSync(s[VIEW_KEY]?.status);
-  const has = await chrome.storage.local.get(LOCAL_KEY);
   if (!has[LOCAL_KEY]) {
     // 新版本第一次运行：等后台完成迁移 / 首次对账
     await chrome.runtime.sendMessage({ type: 'arc:sync' }).catch((e) => console.warn('[arc-sidebar]', e));

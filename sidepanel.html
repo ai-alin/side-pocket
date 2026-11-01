@@ -27,8 +27,10 @@
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.6" stroke="currentColor" stroke-width="1.6"/><path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         <input id="search" type="search" placeholder="搜索收藏和标签" autocomplete="off" spellcheck="false" aria-label="搜索收藏和标签" />
       </label>
-      <button id="toggle-collapse" class="icon-btn" type="button" title="收起侧边栏" aria-label="收起侧边栏">
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v10" stroke="currentColor" stroke-width="1.4"/></svg>
+      <button id="toggle-collapse" class="icon-btn" type="button" title="固定侧边栏（不自动收起）" aria-label="固定侧边栏（不自动收起）">
+        <!-- 预览时：固定（图钉）；固定时：收起（侧栏图标） -->
+        <svg class="ico-pin" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M9.6 2.2 13.8 6.4l-1.5.4-2.6 2.6.2 2.8-1.2 1.2-2.4-2.4-3 3M5.1 7.1 4 8.3l1.2 1.2M5.1 7.1l2.6-2.6.4-1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg class="ico-collapse" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v10" stroke="currentColor" stroke-width="1.4"/></svg>
       </button>
     </header>
 
@@ -89,7 +91,14 @@
       <input type="radio" name="collapseMode" value="full-hide" />
       <span>
         <strong>完全隐藏</strong>
-        <small>收起时完全隐藏，鼠标移到屏幕边缘唤出</small>
+        <small>收起时完全隐藏，鼠标停在屏幕边缘时浮出</small>
+      </span>
+    </label>
+    <label class="settings-opt settings-check">
+      <input id="hover-expand" type="checkbox" />
+      <span>
+        <strong>鼠标停留时自动展开</strong>
+        <small>关掉后，图标栏只在点击顶部按钮时展开</small>
       </span>
     </label>
 
@@ -105,7 +114,7 @@
       </label>
     </div>
 
-    <p class="settings-note">新标签页、chrome:// 等内部页无法显示浮动侧栏，点扩展图标会改用系统侧栏打开。</p>
+    <p class="settings-note">按 Option+S（Windows 上是 Alt+S）固定展开或收起侧边栏，可在 chrome://extensions/shortcuts 修改。新标签页、chrome:// 等内部页无法显示浮动侧栏，点扩展图标会改用系统侧栏打开。</p>
   </div>
 
   <div id="drop-line" class="drop-line" hidden></div>

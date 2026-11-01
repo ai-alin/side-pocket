@@ -87,7 +87,8 @@ img { -webkit-user-drag: none; pointer-events: none; }
   display: flex;
   flex-direction: column;
   height: 100vh;
-  transition: opacity 140ms ease;
+  /* 展开：面板先变宽，内容稍后淡入并轻轻滑到位 */
+  transition: opacity 180ms ease 70ms, transform 300ms var(--ease), visibility 0s;
 }
 .top-bar { display: flex; align-items: center; gap: 4px; padding: 10px 10px 2px; }
 .search {
@@ -133,6 +134,8 @@ img { -webkit-user-drag: none; pointer-events: none; }
 .icon-btn:hover { background: var(--hover); color: var(--fg); }
 .icon-btn svg { width: 16px; height: 16px; }
 html:not(.overlay) #toggle-collapse { display: none; }
+#toggle-collapse .ico-collapse, html.pinned #toggle-collapse .ico-pin { display: none; }
+html.pinned #toggle-collapse .ico-collapse { display: block; }
 
 .scroll-area {
   flex: 1;
@@ -440,6 +443,7 @@ body.is-dragging .folder-children-wrap, body.is-dragging .tile { transition: non
 .settings-opt { display: flex; align-items: flex-start; gap: 10px; padding: 8px; border-radius: 9px; cursor: pointer; }
 .settings-opt:hover { background: var(--hover); }
 .settings-opt input { margin-top: 3px; accent-color: var(--accent); }
+.settings-check { margin-top: 4px; border-top: 1px solid var(--line); border-radius: 0 0 9px 9px; padding-top: 10px; }
 .settings-opt strong { display: block; font-size: 13px; font-weight: 600; }
 .settings-opt small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); }
 .settings-side-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
@@ -459,7 +463,15 @@ body.is-dragging .folder-children-wrap, body.is-dragging .tile { transition: non
 .settings-note { margin: 10px 4px 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
 
 /* ---------- 收起：52px 图标胶囊 ---------- */
-html.is-collapsed .full-view { opacity: 0; visibility: hidden; pointer-events: none; }
+/* 收起：内容先快速淡出，面板再变窄，图标最后出现 */
+html.is-collapsed .full-view {
+  opacity: 0;
+  transform: translateX(-10px);
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 90ms ease, transform 90ms ease, visibility 0s linear 90ms;
+}
+html[data-side="right"].is-collapsed .full-view { transform: translateX(10px); }
 .rail-view {
   position: fixed;
   top: 0;
@@ -475,11 +487,18 @@ html.is-collapsed .full-view { opacity: 0; visibility: hidden; pointer-events: n
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition: opacity 150ms ease;
+  transition: opacity 80ms ease, visibility 0s linear 80ms;
 }
 /* 居右时胶囊显示的是 iframe 的右侧 52px */
 html[data-side="right"] .rail-view { left: auto; right: 0; }
-html.is-collapsed:not([data-collapse-style="full-hide"]) .rail-view { opacity: 1; visibility: visible; pointer-events: auto; }
+html.is-collapsed:not([data-collapse-style="full-hide"]) .rail-view {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 140ms ease 110ms, visibility 0s;
+}
+/* 换页时侧栏重新加载：数据就绪前不显示，避免图标一个个蹦出来 */
+html.overlay:not(.ready) .rail-view, html.overlay:not(.ready) .full-view { opacity: 0 !important; transition: none !important; }
 .rail-group, .rail-scroll { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; }
 .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 2px 0; scrollbar-width: none; }
 .rail-scroll::-webkit-scrollbar { display: none; }
