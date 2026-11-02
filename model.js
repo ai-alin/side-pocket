@@ -336,11 +336,13 @@ export function applyOp(s, op, a = {}) {
  *
  * bindings: { [tabId]: { id, url: 绑定时的 normUrl, title: 上次同步的标题 } }，只在本机本次会话有效。
  * skip:     正在被关闭的 tabId，不参与对账，避免关闭途中又被加回来。
+ * extraSaved: 存在别处（Chrome 书签）的收藏和置顶网址（normUrl），和 s 里的收藏一样对待。
  */
-export function reconcileTabs(s, tabs, bindings = {}, skip = new Set()) {
+export function reconcileTabs(s, tabs, bindings = {}, skip = new Set(), extraSaved = null) {
   const b = { ...bindings };
   let v = view(s);
   const saved = savedUrlSet(s, v);
+  for (const u of extraSaved || []) saved.add(u);
 
   // 1. 去重：网址重复或已收藏的今日条目
   const keep = new Map(); // normUrl -> 今日条目 id
@@ -454,8 +456,9 @@ export function tabClosed(s, tabId, bindings, openTabs, { windowClosing = false 
  * 别的设备「处处关闭」了一些今日条目（closed: [{ id, url }]），算出本机要关的标签：
  * 绑定在这些条目上的标签，以及网址相同、且本机没有收藏这个网址的标签。
  */
-export function tabsToClose(s, closed, tabs, bindings) {
+export function tabsToClose(s, closed, tabs, bindings, extraSaved = null) {
   const saved = savedUrlSet(s);
+  for (const u of extraSaved || []) saved.add(u);
   const ids = new Set(closed.map((c) => c.id));
   const urls = new Set(closed.map((c) => normUrl(c.url)).filter((u) => u && !saved.has(u)));
   return tabs

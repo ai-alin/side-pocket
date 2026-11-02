@@ -4,6 +4,7 @@
 
 import * as M from './model.js';
 import { LOCAL_KEY, VIEW_KEY } from './store.js';
+import * as B from './bookmarks.js';
 
 const $ = (sel) => document.querySelector(sel);
 const SELF_PREFIX = chrome.runtime.getURL('');
@@ -131,7 +132,7 @@ function showSync(st) {
   const badge = $('#sync-state');
   badge.textContent = SYNC_MSG[st] ? '未同步' : '已同步';
   badge.classList.toggle('warn', !!SYNC_MSG[st]);
-  badge.title = SYNC_MSG[st] || '收藏和今日已同步到你的 Google 账号';
+  badge.title = SYNC_MSG[st] || '今日已同步到你的 Google 账号；置顶和收藏存在 Chrome 书签里，由 Chrome 同步';
   if (st === syncStatus) return;
   syncStatus = st;
   if (SYNC_MSG[st]) showStatus(SYNC_MSG[st], 'warn', 8000);
@@ -140,9 +141,18 @@ function showSync(st) {
 
 /* ---------- 数据 ---------- */
 
+/** 今日来自后台维护的 storage.local；收藏和置顶直接读 Chrome 书签（只读，不建文件夹，建由后台负责） */
 async function loadState() {
-  const d = await chrome.storage.local.get(LOCAL_KEY);
-  state = { nodes: d[LOCAL_KEY]?.nodes || {} };
+  const [d, sync, ids] = await Promise.all([
+    chrome.storage.local.get([LOCAL_KEY, B.COLLAPSE_KEY]),
+    chrome.storage.sync.get(B.COLOR_KEY),
+    B.resolveRoot(chrome.bookmarks).catch(() => null),
+  ]);
+  const saved = await B.loadNodes(chrome.bookmarks, ids, { colors: sync[B.COLOR_KEY], collapsed: d[B.COLLAPSE_KEY] }).catch((e) => {
+    console.warn('[side-pocket] 读取书签失败', e);
+    return {};
+  });
+  state = { nodes: { ...(d[LOCAL_KEY]?.nodes || {}), ...saved } };
   if (renaming && !state.nodes[renaming]) renaming = null;
 }
 
@@ -212,11 +222,16 @@ async function openNode(n) {
   }
 }
 
-function newFolder(parent = M.ROOT, index) {
-  const id = M.newId();
+/** 新建文件夹并进入重命名。文件夹建在书签里，真正的 id 由后台返回，先用临时 id 显示 */
+async function newFolder(parent = M.ROOT, index) {
+  const tmp = M.newId();
   if (parent !== M.ROOT && state.nodes[parent]?.collapsed) op('setCollapsed', { id: parent, collapsed: false });
-  renaming = id;
-  op('addFolder', { id, parent, index });
+  renaming = tmp;
+  const id = await op('addFolder', { id: tmp, parent, index });
+  if (renaming === tmp) {
+    renaming = typeof id === 'string' ? id : null;
+    render();
+  }
 }
 
 function startRename(id) {
@@ -832,6 +847,14 @@ document.addEventListener('dragend', () => {
 for (const ev of ['onCreated', 'onRemoved', 'onUpdated', 'onActivated', 'onMoved', 'onAttached', 'onDetached', 'onReplaced']) {
   chrome.tabs[ev].addListener(() => refreshSoon());
 }
+
+// 书签变了（包括在 Chrome 书签管理器里改的、从别的电脑同步来的）、文件夹颜色 / 折叠变了：重新读取
+for (const ev of ['onCreated', 'onRemoved', 'onChanged', 'onMoved', 'onChildrenReordered', 'onImportEnded']) {
+  chrome.bookmarks[ev]?.addListener(() => refreshSoon());
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+  if ((area === 'sync' && changes[B.COLOR_KEY]) || (area === 'local' && changes[B.COLLAPSE_KEY])) refreshSoon();
+});
 
 chrome.storage.session.onChanged.addListener((changes) => {
   const c = changes[VIEW_KEY];

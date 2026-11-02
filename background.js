@@ -3,14 +3,17 @@
 // - 所有读写走一个串行队列，避免交错。
 // - 改动先存 storage.local（立即生效），再合并成批写入 storage.sync（节流，避免被 Chrome 限流）。
 // 侧栏（无论开了多少个）只负责显示，不再各自对账、各自写云端。
+// 0.9.0 起收藏和置顶存在 Chrome 书签里（见 bookmarks.js），这里的 engine 只管「今日」。
 
 import * as M from './model.js';
+import * as B from './bookmarks.js';
 import { createEngine, VIEW_KEY } from './store.js';
 
 const SELF_PREFIX = chrome.runtime.getURL('');
 const BIND_KEY = 'tabBindings'; // storage.session：tabId -> 今日条目，浏览器重启即清空（tab id 也会变）
 const FLUSH_ALARM = 'side-pocket-flush';
 const LEGACY_FLUSH_ALARM = 'arc-flush'; // 0.7.x 及以前的闹钟名，改名时可能还有一个没触发
+const BACKUP_KEY = 'backup.beforeBookmarks'; // storage.local：迁移到书签前的完整旧数据，出问题时可以恢复
 const RECONCILE_DELAY = 400;
 const FLUSH_DELAY = 1500;
 const FLUSH_GAP = 3000;
@@ -22,6 +25,10 @@ let status = 'saved';
 let published = { version: -1, status: null };
 const closing = new Set(); // 正在被本扩展关闭的 tabId
 let chain = Promise.resolve();
+const bm = chrome.bookmarks;
+let ids = null; // { root, pinned }：书签里 Side Pocket 和置顶文件夹的 id
+let saved = {}; // 书签换算成的侧栏节点（收藏和置顶）
+let savedUrls = new Set();
 
 const isSelf = (t) => (t.url || t.pendingUrl || '').startsWith(SELF_PREFIX);
 
@@ -64,6 +71,9 @@ async function init() {
   });
   bindings = (await chrome.storage.session.get(BIND_KEY))[BIND_KEY] || {};
   const res = await engine.init();
+  await reloadSaved();
+  // 搬家失败不能拖垮「今日」：旧数据还在原处、也有备份，下次启动再试
+  await absorbLegacy().catch((e) => console.error('[side-pocket] 收藏搬进书签失败', e));
   await closeTabsFor(res.closed);
   await reconcileNow();
   scheduleFlush();
@@ -83,11 +93,129 @@ async function saveBindings(next) {
   await chrome.storage.session.set({ [BIND_KEY]: bindings });
 }
 
+/* ---------- 收藏和置顶（Chrome 书签） ---------- */
+
+const isSaved = (id) => typeof id === 'string' && id.startsWith('bkm');
+
+/** 重新读取书签；Side Pocket 文件夹被删掉了就重新建一个空的 */
+async function reloadSaved() {
+  ids = await B.resolveRoot(bm, { create: true });
+  saved = await B.loadNodes(bm, ids);
+  savedUrls = B.urlSet(saved);
+}
+
+/**
+ * 把旧格式里不在今日的节点（收藏、置顶）搬进书签，再从旧存储里删掉。
+ * 升级到 0.9.0 时执行一次；以后没升级的旧版设备又写回来旧格式的收藏时，也会被搬过来。
+ * 搬之前把完整旧数据备份在本机。
+ */
+async function absorbLegacy() {
+  const v = M.view(engine.state);
+  if (!Object.keys(engine.state.nodes).some((id) => v.parent[id] !== M.TODAY)) return;
+  if (!(await chrome.storage.local.get(BACKUP_KEY))[BACKUP_KEY]) {
+    await chrome.storage.local.set({ [BACKUP_KEY]: { at: Date.now(), nodes: engine.state.nodes } });
+  }
+  const r = await B.importNodes(bm, ids, engine.state.nodes);
+  if (Object.keys(r.colors).length) {
+    const cur = (await chrome.storage.sync.get(B.COLOR_KEY))[B.COLOR_KEY] || {};
+    await chrome.storage.sync.set({ [B.COLOR_KEY]: { ...r.colors, ...cur } });
+  }
+  if (Object.keys(r.collapsed).length) {
+    const cur = (await chrome.storage.local.get(B.COLLAPSE_KEY))[B.COLLAPSE_KEY] || {};
+    await chrome.storage.local.set({ [B.COLLAPSE_KEY]: { ...cur, ...r.collapsed } });
+  }
+  await engine.apply((s) => {
+    for (const id of r.drop) M.remove(s, id);
+  });
+  await reloadSaved();
+  scheduleFlush();
+}
+
+async function getColors() {
+  return (await chrome.storage.sync.get(B.COLOR_KEY))[B.COLOR_KEY] || {};
+}
+
+async function setFolderColor(id, color) {
+  const n = saved[id];
+  if (n?.type !== 'folder') return false;
+  const cur = await getColors();
+  if (M.FOLDER_COLORS.includes(color)) cur[n.path] = color;
+  else delete cur[n.path];
+  await chrome.storage.sync.set({ [B.COLOR_KEY]: cur });
+  return true;
+}
+
+async function setFolderCollapsed(id, on) {
+  if (saved[id]?.type !== 'folder') return false;
+  const cur = (await chrome.storage.local.get(B.COLLAPSE_KEY))[B.COLLAPSE_KEY] || {};
+  if (on) cur[id] = true;
+  else delete cur[id];
+  await chrome.storage.local.set({ [B.COLLAPSE_KEY]: cur });
+  return true;
+}
+
+/** 涉及收藏 / 置顶的操作：改书签；今日 ↔ 收藏之间的移动同时改今日 */
+async function savedOp(op, a) {
+  await reloadSaved();
+  if (op === 'setColor') return setFolderColor(a.id, a.color);
+  if (op === 'setCollapsed') return setFolderCollapsed(a.id, a.collapsed);
+  const v = M.view({ nodes: saved });
+  const before = B.folderPaths(saved);
+  let result = false;
+  if (op === 'addFolder') result = await B.addFolder(bm, ids, saved, v, a);
+  else if (op === 'rename') result = await B.rename(bm, saved, a.id, a.title);
+  else if (op === 'remove') result = await B.removeSaved(bm, saved, a.id);
+  else if (op === 'unpin') result = v.parent[a.id] === M.PINNED && (await B.moveSaved(bm, ids, saved, v, a.id, M.ROOT));
+  else if (op === 'move' || op === 'pin') {
+    const parent = op === 'pin' ? M.PINNED : a.parent;
+    const n = saved[a.id];
+    const today = engine.state.nodes[a.id];
+    if (n && parent === M.TODAY) {
+      // 收藏 → 今日
+      if (n.type !== 'link') return false;
+      await B.removeSaved(bm, saved, a.id);
+      await engine.apply((s) => M.addLink(s, { title: n.title, url: n.url }, M.TODAY, a.index));
+      result = true;
+    } else if (n) {
+      if (op === 'pin' && n.type !== 'link') return false;
+      result = await B.moveSaved(bm, ids, saved, v, a.id, parent, a.index);
+    } else if (today?.type === 'link' && M.view(engine.state).parent[a.id] === M.TODAY) {
+      // 今日 → 收藏 / 置顶：建一个书签，今日里这条去掉（不关标签）
+      if (!savedUrls.has(M.normUrl(today.url))) {
+        await B.createLink(bm, ids, saved, v, today, parent, a.index);
+      }
+      await engine.apply((s) => M.remove(s, a.id));
+      result = true;
+    }
+  }
+  await reloadSaved();
+  const next = B.carryColors(await getColors(), before, B.folderPaths(saved));
+  if (next) await chrome.storage.sync.set({ [B.COLOR_KEY]: next });
+  return result;
+}
+
+// 书签有变化（包括在 Chrome 书签管理器里改的、从别的电脑同步过来的）：重新读取，今日跟着对账
+let bmTimer = null;
+function onBookmarks() {
+  clearTimeout(bmTimer);
+  bmTimer = setTimeout(
+    () =>
+      run(async () => {
+        await reloadSaved();
+        await reconcileNow();
+      }),
+    300,
+  );
+}
+for (const ev of ['onCreated', 'onRemoved', 'onChanged', 'onMoved', 'onChildrenReordered', 'onImportEnded']) {
+  bm[ev]?.addListener(onBookmarks);
+}
+
 /* ---------- 「今日」对账 ---------- */
 
 async function reconcileNow() {
   const tabs = (await chrome.tabs.query({})).filter((t) => !isSelf(t));
-  const r = await engine.apply((s) => M.reconcileTabs(s, tabs, bindings, closing));
+  const r = await engine.apply((s) => M.reconcileTabs(s, tabs, bindings, closing, savedUrls));
   await saveBindings(r.bindings);
   scheduleFlush();
 }
@@ -136,11 +264,11 @@ chrome.tabs.onRemoved.addListener((tabId, info) =>
 async function closeTabsFor(closed) {
   if (!closed?.length) return;
   const all = await chrome.tabs.query({});
-  const ids = M.tabsToClose(engine.state, closed, all.filter((t) => !isSelf(t)), bindings);
-  if (!ids.length) return;
-  const set = new Set(ids);
+  const toClose = M.tabsToClose(engine.state, closed, all.filter((t) => !isSelf(t)), bindings, savedUrls);
+  if (!toClose.length) return;
+  const set = new Set(toClose);
   const b = { ...bindings };
-  for (const id of ids) {
+  for (const id of toClose) {
     closing.add(id);
     delete b[String(id)];
   }
@@ -152,9 +280,9 @@ async function closeTabsFor(closed) {
     if (list.every((t) => set.has(t.id))) await chrome.tabs.create({ windowId, active: true }).catch(() => {});
   }
   try {
-    await chrome.tabs.remove(ids);
+    await chrome.tabs.remove(toClose);
   } catch (e) {
-    for (const id of ids) closing.delete(id);
+    for (const id of toClose) closing.delete(id);
     console.warn('[side-pocket] 关闭标签失败', e);
   }
 }
@@ -170,6 +298,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     () =>
       run(async () => {
         const res = await engine.mergeRemote();
+        await absorbLegacy().catch((e) => console.error('[side-pocket] 收藏搬进书签失败', e)); // 还没升级的旧版设备写回来的收藏
         await closeTabsFor(res.closed);
         if (res.changed) await reconcileNow();
         scheduleFlush();
@@ -216,6 +345,8 @@ const NO_RECONCILE = new Set(['rename', 'setCollapsed', 'setColor', 'addFolder']
 
 async function handleOp(op, a) {
   if (a.id != null && !M.isValidId(a.id)) throw new Error('无效 id');
+  const p = a.parent;
+  if (p != null && p !== M.ROOT && p !== M.PINNED && p !== M.TODAY && !M.isValidId(p)) throw new Error('无效目标');
   let result;
   if (op === 'clearToday') {
     // 「本机开着哪些网址」以后台查到的为准，不信任侧栏传来的
@@ -227,6 +358,8 @@ async function handleOp(op, a) {
     if (!n) return false;
     result = await engine.apply((s) => M.applyOp(s, op, a));
     await closeTabsFor([{ id: a.id, url: n.url }]);
+  } else if (isSaved(a.id) || op === 'addFolder' || op === 'pin' || (op === 'move' && p !== M.TODAY)) {
+    result = await savedOp(op, a);
   } else {
     result = await engine.apply((s) => M.applyOp(s, op, a));
   }

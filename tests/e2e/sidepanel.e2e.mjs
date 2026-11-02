@@ -9,10 +9,13 @@ import { chromium } from 'playwright';
 
 const EXT = '/tmp/ext-sidepanel';
 execSync(`rm -rf ${EXT} && mkdir -p ${EXT} && cp -r manifest.json *.js *.html *.css icons ${EXT}/`);
-const ctx = await chromium.launchPersistentContext('/tmp/prof-sidepanel-' + Date.now(), {
-  channel: 'chromium', headless: true, viewport: { width: 1100, height: 700 },
-  args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
-});
+const PROF = '/tmp/prof-sidepanel-' + Date.now();
+const launch = () =>
+  chromium.launchPersistentContext(PROF, {
+    channel: 'chromium', headless: true, viewport: { width: 1100, height: 700 },
+    args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
+  });
+let ctx = await launch();
 let [sw] = ctx.serviceWorkers();
 if (!sw) sw = await ctx.waitForEvent('serviceworker');
 const extId = new URL(sw.url()).host;
@@ -83,6 +86,76 @@ check('侧边栏里加载的是我们的侧栏', contexts.length === 1 && contex
 await sw.evaluate(async () => { const w = await chrome.windows.getLastFocused(); await chrome.sidePanel.close({ windowId: w.id }); });
 await sleep(500);
 check('关闭侧边栏', (await sw.evaluate(async () => (await chrome.runtime.getContexts({ contextTypes: ['SIDE_PANEL'] })).length)) === 0);
+
+console.log('收藏和置顶存在 Chrome 书签里');
+const bmList = () => sw.evaluate(async () => {
+  const top = await chrome.bookmarks.getChildren('0');
+  const other = top.find((b) => b.folderType === 'other') || top.find((b) => b.id === '2');
+  const root = (await chrome.bookmarks.getChildren(other.id)).find((b) => b.title === 'Side Pocket' && !b.url);
+  if (!root) return null;
+  const [t] = await chrome.bookmarks.getSubTree(root.id);
+  const out = [];
+  const walk = (b, path) => {
+    for (const c of b.children || []) {
+      if (c.url) out.push(path + c.url);
+      else { out.push(path + c.title + '/'); walk(c, path + c.title + '/'); }
+    }
+  };
+  walk(t, '');
+  return out;
+});
+let list = await bmList();
+check('其他书签里建好了 Side Pocket / 置顶', Array.isArray(list) && list.includes('置顶/'), JSON.stringify(list));
+const sendOp = (op, args) => panel.evaluate(([op, args]) => chrome.runtime.sendMessage({ type: 'side-pocket:op', op, args }), [op, args]);
+const todayId = await panel.evaluate(async () => {
+  const { state2 } = await chrome.storage.local.get('state2');
+  return Object.values(state2.nodes).find((n) => n.url === 'http://site.test/a')?.id;
+});
+await sendOp('move', { id: todayId, parent: 'root' });
+await sleep(800);
+list = await bmList();
+check('今日 → 收藏：变成书签', list.includes('http://site.test/a'), JSON.stringify(list));
+await panel.reload(); await sleep(1000);
+check('收藏里显示出来，今日里没有了', (await panel.locator('#saved .row.link[title="http://site.test/a"]').count()) === 1 && (await panel.locator('#tabs .row.tab[title="http://site.test/a"]').count()) === 0);
+const bkmId = await panel.locator('#saved .row.link[title="http://site.test/a"]').getAttribute('data-id');
+await sendOp('pin', { id: bkmId });
+await sleep(800);
+list = await bmList();
+check('置顶：书签挪进「置顶」文件夹', list.includes('置顶/http://site.test/a'), JSON.stringify(list));
+const fid = (await sendOp('addFolder', { id: 'tmpfold1', title: '工作' }))?.result;
+await sendOp('setColor', { id: fid, color: 'green' });
+await sleep(800);
+list = await bmList();
+const colors = await sw.evaluate(async () => (await chrome.storage.sync.get('ui.folderColors'))['ui.folderColors']);
+check('新建文件夹：建在书签里，颜色另外记下', list.includes('工作/') && colors?.['工作'] === 'green', JSON.stringify([list, colors]));
+
+console.log('旧版设备写回来的收藏');
+await sw.evaluate(() => chrome.storage.sync.set({ 'n:legacy01': { k: 'l', ti: 'Legacy', p: 'root', o: 0, t: Date.now(), u: 'https://legacy.test/' } }));
+await sleep(6000);
+list = await bmList();
+const leftover = await sw.evaluate(async () => Object.keys(await chrome.storage.sync.get(null)).filter((k) => k === 'n:legacy01'));
+check('搬进书签，并从插件的同步存储里删掉', list.includes('https://legacy.test/') && leftover.length === 0, JSON.stringify([list, leftover]));
+const backup = await sw.evaluate(async () => !!(await chrome.storage.local.get('backup.beforeBookmarks'))['backup.beforeBookmarks']);
+check('搬之前在本机留了备份', backup);
+
+console.log('模拟卸载重装：插件自己的数据全部清空');
+// 清掉插件自己的本机和同步存储，书签留着；关掉浏览器再用同一个配置启动
+await sw.evaluate(async () => { await chrome.storage.local.clear(); await chrome.storage.sync.clear(); });
+await sleep(500);
+await ctx.close();
+ctx = await launch();
+[sw] = ctx.serviceWorkers();
+if (!sw) sw = await ctx.waitForEvent('serviceworker');
+const wiped = await sw.evaluate(async () => Object.keys(await chrome.storage.local.get(null)).filter((k) => k !== 'deviceId' && k !== 'state2'));
+check('重启后插件存储确实是空的（没有旧收藏、没有备份）', !wiped.includes('backup.beforeBookmarks'), JSON.stringify(wiped));
+await sleep(1500);
+const panel2 = await ctx.newPage();
+await panel2.goto(`chrome-extension://${extId}/sidepanel.html`);
+await sleep(1500);
+check('置顶还在', (await panel2.locator('#pinned .tile[title]').count()) === 1);
+check('收藏还在（文件夹和网址）', (await panel2.locator('#saved .row').count()) >= 2, String(await panel2.locator('#saved .row').count()));
+list = await bmList();
+check('没有重复建 Side Pocket 文件夹', list.filter((x) => x === '置顶/').length === 1, JSON.stringify(list));
 
 console.log(`\n通过 ${pass}，失败 ${fail}`);
 await ctx.close();

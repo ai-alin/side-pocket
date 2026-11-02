@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Side Pocket",
-  "version": "0.8.0",
-  "description": "侧边栏里的随身口袋：在一台电脑上打开、还没处理完的网页，换台电脑接着处理，处理完两边一起关掉。另有置顶网站和收藏文件夹，随 Google 账号同步。",
+  "version": "0.9.0",
+  "description": "侧边栏里的随身口袋：在一台电脑上打开、还没处理完的网页，换台电脑接着处理，处理完两边一起关掉。置顶和收藏存在 Chrome 书签里，跟着 Google 账号走。",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxs3kmcHwxUJuw7pYyDpy6lAsFLC5GLwDV7qZpmN6LCenpCLOa4dm86TazlsEf0OoCa6ONiuNH+cHM9Kv7O1n2wTdsFOKMAfrlDWVUe/pe0g4WTBSmhtFE9FdzV4q4F01Y2b7VjA4Y8izTTTG1S815qdq+PrqiGXNKDp/sXNbu1QOfQ/wG4cJF/3oUBuaoar0gmH0VZPJuUChUVA8Tzo3DbeRHazWN4nCrASMEJHgf9u6coQpvrmhBz25QOVqbLUczRCziS22jVJ90AJ/BwWdNO1iacoX6IV8Q0NlbBzXJYVYQRPVvBpj7rtg2jWrdELSzCSmz2bTdC6c3F5GuI0ZCQIDAQAB",
   "minimum_chrome_version": "116",
   "permissions": [
     "sidePanel",
+    "bookmarks",
     "storage",
     "tabs",
     "favicon",
