@@ -156,25 +156,32 @@ test('重启后 tab id 全变：会话恢复的标签按网址重新绑定，不
   assert.ok(r.bindings['99']);
 });
 
-test('两台设备各自给同一网址建了今日条目：合并后只剩一条，且不关闭标签', async () => {
+test('两台设备各自给同一网址建了今日条目：不关闭标签，各自只显示自己那条；一边单独关掉，两边一起关', async () => {
   const cloud = area();
   const A = await device(cloud, 'devA');
   const B = await device(cloud, 'devB');
-  await A.e.apply((s) => M.reconcileTabs(s, [T(1, 'https://same.com', 'S')]));
+  let ba = (await A.e.apply((s) => M.reconcileTabs(s, [T(1, 'https://same.com', 'S')]))).bindings;
   await sleep(3);
-  await B.e.apply((s) => M.reconcileTabs(s, [T(1, 'https://same.com', 'S')]));
+  const bb = (await B.e.apply((s) => M.reconcileTabs(s, [T(1, 'https://same.com', 'S')]))).bindings;
   await A.e.flush();
   await B.e.flush();
   await A.e.mergeRemote();
-  await A.e.apply((s) => M.reconcileTabs(s, [T(1, 'https://same.com', 'S')]));
+  ba = (await A.e.apply((s) => M.reconcileTabs(s, [T(1, 'https://same.com', 'S')], ba))).bindings;
   await A.e.flush();
-  const res = await B.e.mergeRemote();
-  await B.e.apply((s) => M.reconcileTabs(s, [T(1, 'https://same.com', 'S')]));
+  let res = await B.e.mergeRemote();
+  await B.e.apply((s) => M.reconcileTabs(s, [T(1, 'https://same.com', 'S')], bb));
   assert.deepEqual(res.closed, []);
-  assert.equal(titles(A.e, M.TODAY).length, 1);
-  assert.equal(titles(B.e, M.TODAY).length, 1);
+  const local = new Set([M.normUrl('https://same.com')]);
+  const g = M.todayGroups(A.e.state, new Set([ba['1'].id]), local);
+  assert.deepEqual([g.mine.length, g.others.length], [1, 0]);
+  // A 单独关掉这个标签：B 那边的条目也删掉，并让 B 关掉它的标签
+  await A.e.apply((s) => M.tabClosed(s, 1, ba, []));
+  await A.e.flush();
+  res = await B.e.mergeRemote();
+  assert.deepEqual(res.closed.map((c) => c.id).sort(), [ba['1'].id, bb['1'].id].sort()); // A 自己那条和 B 建的同网址那条
+  assert.deepEqual(Object.keys(B.e.state.nodes), []);
+  assert.deepEqual(M.tabsToClose(B.e.state, res.closed, [T(1, 'https://same.com', 'S')], bb), [1]);
 });
-
 test('文件夹颜色跨设备同步', async () => {
   const cloud = area();
   const A = await device(cloud, 'devA');

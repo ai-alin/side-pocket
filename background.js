@@ -87,6 +87,16 @@ async function publish() {
   await chrome.storage.session.set({ [VIEW_KEY]: { at: Date.now(), status } });
 }
 
+/** 本机开着的标签占着的今日条目 id */
+function boundIds(tabs) {
+  const out = new Set();
+  for (const t of tabs) {
+    const bd = bindings[String(t.id)];
+    if (bd?.id) out.add(bd.id);
+  }
+  return [...out];
+}
+
 async function saveBindings(next) {
   if (JSON.stringify(next) === JSON.stringify(bindings)) return;
   bindings = next;
@@ -349,15 +359,17 @@ async function handleOp(op, a) {
   if (p != null && p !== M.ROOT && p !== M.PINNED && p !== M.TODAY && !M.isValidId(p)) throw new Error('无效目标');
   let result;
   if (op === 'clearToday') {
-    // 「本机开着哪些网址」以后台查到的为准，不信任侧栏传来的
+    // 「本机开着哪些」以后台查到的为准，不信任侧栏传来的
     const tabs = (await chrome.tabs.query({})).filter((t) => !isSelf(t) && !t.incognito);
     const openUrls = tabs.map((t) => t.url || t.pendingUrl || '');
-    result = await engine.apply((s) => M.applyOp(s, op, { openUrls }));
+    result = await engine.apply((s) => M.applyOp(s, op, { openUrls, openIds: boundIds(tabs) }));
   } else if (op === 'closeToday') {
-    const n = engine.state.nodes[a.id];
-    if (!n) return false;
-    result = await engine.apply((s) => M.applyOp(s, op, a));
-    await closeTabsFor([{ id: a.id, url: n.url }]);
+    if (!engine.state.nodes[a.id]) return false;
+    const tabs = (await chrome.tabs.query({})).filter((t) => !isSelf(t) && !t.incognito);
+    const keep = boundIds(tabs).filter((x) => x !== a.id); // 本机其他标签占着的条目不删
+    const closed = await engine.apply((s) => M.applyOp(s, op, { id: a.id, keep }));
+    await closeTabsFor(closed);
+    result = closed.length > 0;
   } else if (isSaved(a.id) || op === 'addFolder' || op === 'pin' || (op === 'move' && p !== M.TODAY)) {
     result = await savedOp(op, a);
   } else {

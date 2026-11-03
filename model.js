@@ -243,12 +243,13 @@ export function setColor(s, id, color) {
  * 不带「处处关闭」：别的设备上还开着的标签不会被关，它们下次对账时会重新出现在今日里；
  * 哪台设备都没开着的条目就此消失。
  */
-export function clearUnopenedToday(s, openUrls = []) {
+export function clearUnopenedToday(s, openUrls = [], openIds = null) {
   const open = new Set([...openUrls].map(normUrl));
+  const ids = openIds ? new Set(openIds) : null; // 给了本机标签占用的条目 id 时，按条目判断
   const v = view(s);
   let count = 0;
   for (const id of v.order[TODAY]) {
-    if (!open.has(normUrl(s.nodes[id].url))) {
+    if (!(ids && ids.has(id)) && !open.has(normUrl(s.nodes[id].url))) {
       remove(s, id);
       count++;
     }
@@ -304,11 +305,11 @@ export function applyOp(s, op, a = {}) {
     case 'setColor':
       return setColor(s, a.id, a.color);
     case 'clearToday':
-      return clearUnopenedToday(s, a.openUrls || []);
+      return clearUnopenedToday(s, a.openUrls || [], a.openIds);
     case 'remove':
       return remove(s, a.id);
     case 'closeToday':
-      return remove(s, a.id, { close: true });
+      return closeEverywhere(s, a.id, new Set(a.keep || []));
     case 'move':
       return move(s, a.id, a.parent, a.index);
     case 'pin':
@@ -322,139 +323,197 @@ export function applyOp(s, op, a = {}) {
 
 /* ---------- 「今日」与本机标签对账 ---------- */
 
+const hostOf = (u) => {
+  try {
+    return new URL(u).host;
+  } catch {
+    return '';
+  }
+};
+
 /**
- * 「今日」是跨设备的待继续列表。本函数把本机打开的标签同步进去，规则：
- * - 同一网址只留一条（id 最小的，各设备结论一致）；已在置顶/收藏里的网址不进今日。
- *   去重删除不会关闭任何设备上的标签。
- * - 已绑定的标签：标题变了 → 更新标题；在本机导航到新网址 → 条目跟着更新
- *   （旧网址在本机别的标签里还开着时，改为给这个标签新建一条）；
- *   导航到已收藏的网址 → 只解绑，条目保留，显示为未打开。
- * - 未绑定的标签：网址已在今日 → 绑定上去；否则新建一条，放在今日最上面。
- *   这一次对账里新建的多条（比如刚打开浏览器恢复了一批标签）作为一组放在最上面，
- *   组内按标签栏从左到右的顺序；已有条目的位置不变。
- * - 这里不删除任何条目（去重除外）。删除只发生在 tabClosed() 和侧栏 ✕。
+ * 「今日」是所有电脑上开着的临时网页。本机这一侧跟着 Chrome 的标签走：一个标签对应一条。
+ * - 标签里点链接、跳到别的网址：只更新它自己那一条（位置不变）。
+ * - 中途打开 chrome://、新标签页这类页面：保留原来那一条，回到普通网页后继续更新它。
+ * - 同一网址开了两个标签，就是两条。
+ * - 新开的标签：建一条放在今日最上面；同一次对账里新建的多条作为一组，组内按标签栏从左到右。
+ * - 没绑定的标签（刚重启浏览器、点开了一条没在本机打开的条目）：先按网址认领一条还没被本机标签占用的条目，
+ *   没有可认领的才新建，所以重启后不会冒出重复的。
+ * - 收藏 / 置顶过的网址不进今日：这样的标签归收藏管（绑定记为 own: 'saved'），
+ *   在同一个网站里怎么点都不进今日，跳到别的网站才进。
+ * - 这里不删除任何条目（网址无效、已被收藏的除外）。删除只发生在 tabClosed() 和侧栏 ✕。
  *
- * bindings: { [tabId]: { id, url: 绑定时的 normUrl, title: 上次同步的标题 } }，只在本机本次会话有效。
+ * bindings: { [tabId]: { id, url, title } | { own: 'saved', host, from, url } }，只在本机本次会话有效。
+ *   url 是绑定的条目当前网址的 normUrl；from 是这个标签对应的收藏网址。
  * skip:     正在被关闭的 tabId，不参与对账，避免关闭途中又被加回来。
  * extraSaved: 存在别处（Chrome 书签）的收藏和置顶网址（normUrl），和 s 里的收藏一样对待。
  */
 export function reconcileTabs(s, tabs, bindings = {}, skip = new Set(), extraSaved = null) {
-  const b = { ...bindings };
   let v = view(s);
   const saved = savedUrlSet(s, v);
   for (const u of extraSaved || []) saved.add(u);
+  const ownSaved = (url, nu) => ({ own: 'saved', host: hostOf(url), from: nu, url: nu });
 
-  // 1. 去重：网址重复或已收藏的今日条目
-  const keep = new Map(); // normUrl -> 今日条目 id
-  for (const id of [...v.order[TODAY]].sort()) {
+  // 1. 网址无效、或已经收藏了的今日条目去掉（只删条目，不关标签）
+  for (const id of v.order[TODAY]) {
     const n = s.nodes[id];
-    const nu = normUrl(n.url);
-    if (!isSyncableTabUrl(n.url) || saved.has(nu) || keep.has(nu)) remove(s, id);
-    else keep.set(nu, id);
+    if (!isSyncableTabUrl(n.url) || saved.has(normUrl(n.url))) remove(s, id);
   }
 
-  // 2. 逐个标签处理
-  let insertAt = 0; // 新条目放在今日最上面：第一条放第 0 位，同一批的下一条接在它后面
   const open = tabs
     .filter((t) => t.id != null && !t.incognito && !skip.has(t.id))
     .sort((a, c) => a.windowId - c.windowId || a.index - c.index);
+  const b = {};
+  for (const t of open) if (bindings[String(t.id)]) b[String(t.id)] = bindings[String(t.id)]; // 已关掉的标签的绑定丢掉
+  const claimed = new Set(); // 已被本机某个标签占用的今日条目
+  const unbound = [];
 
+  // 2. 已绑定的标签：跟着标签走
   for (const t of open) {
     const tid = String(t.id);
     const url = tabUrl(t);
     const nu = normUrl(url);
     const title = clip(t.title || '');
+    const bd = b[tid];
     if (!isSyncableTabUrl(url) || url.length > MAX_URL) {
-      delete b[tid];
+      // chrome://、新标签页等：保留原绑定和它的条目，回到普通网页后继续更新同一条
+      if (bd?.id && inToday(s.nodes[bd.id]) && !claimed.has(bd.id)) claimed.add(bd.id);
+      else if (bd?.id) delete b[tid];
       continue;
     }
-
-    let bd = b[tid];
-    if (bd) {
-      const n = s.nodes[bd.id];
-      if (!inToday(n)) {
-        bd = null;
-      } else if (bd.url === nu) {
-        if (normUrl(n.url) !== nu) {
-          // 别的设备把这条改成了别的网址：本标签另起一条
-          bd = null;
-        } else {
-          if (title && title !== bd.title) {
-            if (n.title !== title) {
-              n.title = title;
-              touch(s, n);
-            }
-            b[tid] = { ...bd, title };
-          }
-          continue;
-        }
+    if (!bd) {
+      unbound.push(t);
+      continue;
+    }
+    if (bd.own === 'saved') {
+      if (saved.has(nu) || (bd.host && hostOf(url) === bd.host)) {
+        if (bd.url !== nu) b[tid] = { ...bd, url: nu };
       } else {
-        // 本机标签导航到了新网址
-        if (saved.has(nu)) {
-          delete b[tid];
-          continue;
-        }
-        const other = keep.get(nu);
-        if (other) {
-          b[tid] = { id: other, url: nu, title };
-          continue;
-        }
-        const oldStillOpen = open.some(
-          (o) => o !== t && b[String(o.id)]?.id === bd.id && normUrl(tabUrl(o)) === bd.url,
-        );
-        if (!oldStillOpen) {
-          if (keep.get(normUrl(n.url)) === n.id) keep.delete(normUrl(n.url));
-          n.url = url;
-          n.title = title || url;
-          touch(s, n);
-          keep.set(nu, n.id);
-          b[tid] = { id: n.id, url: nu, title };
-          continue;
-        }
-        bd = null;
+        delete b[tid]; // 离开了收藏的那个网站：当作新网页
+        unbound.push(t);
       }
-      delete b[tid];
-    }
-
-    if (saved.has(nu)) continue;
-    const existing = keep.get(nu);
-    if (existing) {
-      b[tid] = { id: existing, url: nu, title };
       continue;
     }
-    const id = addLink(s, { title: title || url, url }, TODAY, insertAt++);
-    keep.set(nu, id);
-    b[tid] = { id, url: nu, title };
+    const n = s.nodes[bd.id];
+    if (!inToday(n) || claimed.has(n.id) || normUrl(n.url) !== bd.url) {
+      // 条目没了 / 被同机另一个标签占了（旧版本遗留）/ 被别的电脑改成了别的网址：重新认领或新建
+      delete b[tid];
+      unbound.push(t);
+      continue;
+    }
+    if (saved.has(nu)) {
+      // 跳到了收藏过的网址：这个标签归收藏管，今日里这条去掉（不关标签）
+      remove(s, n.id);
+      b[tid] = ownSaved(url, nu);
+      continue;
+    }
+    claimed.add(n.id);
+    if (nu !== bd.url) {
+      n.url = url;
+      n.title = title || url;
+      touch(s, n);
+      b[tid] = { id: n.id, url: nu, title };
+    } else if (title && title !== bd.title) {
+      if (n.title !== title) {
+        n.title = title;
+        touch(s, n);
+      }
+      b[tid] = { ...bd, title };
+    }
   }
 
-  // 3. 指向已不在今日的条目的绑定作废
-  for (const [tid, bd] of Object.entries(b)) if (!inToday(s.nodes[bd.id])) delete b[tid];
+  // 3. 没绑定的标签：认领同网址、还没被占用的条目；没有就新建，放在最上面
+  v = view(s);
+  const free = new Map(); // normUrl -> [条目 id]，按今日顺序
+  for (const id of v.order[TODAY]) {
+    if (claimed.has(id)) continue;
+    const k = normUrl(s.nodes[id].url);
+    if (free.has(k)) free.get(k).push(id);
+    else free.set(k, [id]);
+  }
+  let insertAt = 0;
+  for (const t of unbound) {
+    const tid = String(t.id);
+    const url = tabUrl(t);
+    const nu = normUrl(url);
+    const title = clip(t.title || '');
+    if (saved.has(nu)) {
+      b[tid] = ownSaved(url, nu);
+      continue;
+    }
+    const id = free.get(nu)?.shift();
+    if (id) {
+      claimed.add(id);
+      const n = s.nodes[id];
+      if (title && n.title !== title) {
+        n.title = title;
+        touch(s, n);
+      }
+      b[tid] = { id, url: nu, title };
+      continue;
+    }
+    const nid = addLink(s, { title: title || url, url }, TODAY, insertAt++);
+    claimed.add(nid);
+    b[tid] = { id: nid, url: nu, title };
+  }
   return { bindings: b };
 }
 
 /**
- * 本机关掉了一个标签。只有「单独关掉这个标签」才删除条目并在所有设备上关闭；
- * 关整个窗口、退出浏览器不删。本机还有别的标签开着同一网址时也不删。
+ * 处处关闭：删除这一条，以及同一网址、没被本机其他标签占用（keep）的今日条目（别的电脑各自建的），
+ * 都带上「处处关闭」，别的电脑收到后关掉对应的标签。返回删掉的 [{ id, url }]。
+ */
+export function closeEverywhere(s, id, keep = new Set()) {
+  const n = s.nodes[id];
+  if (!inToday(n)) return [];
+  const nu = normUrl(n.url);
+  const out = [];
+  for (const x of view(s).order[TODAY]) {
+    if (x === id || (!keep.has(x) && normUrl(s.nodes[x].url) === nu)) out.push({ id: x, url: s.nodes[x].url });
+  }
+  for (const c of out) remove(s, c.id, { close: true });
+  return out;
+}
+
+/**
+ * 本机关掉了一个标签。单独关掉这个标签：处处关闭它对应的条目（见 closeEverywhere）。
+ * 关整个窗口、退出浏览器不删（下次打开浏览器恢复的标签会按网址重新认领）。
  */
 export function tabClosed(s, tabId, bindings, openTabs, { windowClosing = false } = {}) {
   const b = { ...bindings };
   const bd = b[String(tabId)];
   delete b[String(tabId)];
-  if (!bd || windowClosing) return { bindings: b, removed: null };
+  if (!bd?.id || windowClosing) return { bindings: b, removed: null };
   const n = s.nodes[bd.id];
   if (!inToday(n)) return { bindings: b, removed: null };
-  const nu = normUrl(n.url);
-  if (bd.url !== nu) return { bindings: b, removed: null }; // 条目已被别的设备改成别的网址
-  const stillOpen = openTabs.some((t) => t.id !== tabId && !t.incognito && normUrl(tabUrl(t)) === nu);
-  if (stillOpen) return { bindings: b, removed: null };
-  remove(s, n.id, { close: true });
-  for (const [tid, x] of Object.entries(b)) if (x.id === n.id) delete b[tid];
+  if (normUrl(n.url) !== bd.url) return { bindings: b, removed: null }; // 条目已被别的设备改成别的网址
+  const keep = new Set();
+  for (const t of openTabs) {
+    const x = b[String(t.id)];
+    if (t.id !== tabId && x?.id) keep.add(x.id);
+  }
+  if (keep.has(n.id)) return { bindings: b, removed: null };
+  closeEverywhere(s, n.id, keep);
   return { bindings: b, removed: n.id };
 }
 
 /**
+ * 侧栏里今日分两组：mine = 本机标签占着的；others = 别的电脑上开着的、或谁都没开着的。
+ * 网址在本机已经开着的条目不放进 others（两台电脑各自建了同一网址的条目，本机只显示自己那条）。
+ */
+export function todayGroups(s, claimed = new Set(), localUrls = new Set()) {
+  const mine = [];
+  const others = [];
+  for (const id of view(s).order[TODAY]) {
+    if (claimed.has(id)) mine.push(id);
+    else if (!localUrls.has(normUrl(s.nodes[id].url))) others.push(id);
+  }
+  return { mine, others };
+}
+
+/**
  * 别的设备「处处关闭」了一些今日条目（closed: [{ id, url }]），算出本机要关的标签：
- * 绑定在这些条目上的标签，以及网址相同、且本机没有收藏这个网址的标签。
+ * 绑定在这些条目上的标签；以及网址相同、本机没收藏、也没对应今日里另一条的标签（比如刚重启还没绑定）。
  */
 export function tabsToClose(s, closed, tabs, bindings, extraSaved = null) {
   const saved = savedUrlSet(s);
@@ -462,7 +521,14 @@ export function tabsToClose(s, closed, tabs, bindings, extraSaved = null) {
   const ids = new Set(closed.map((c) => c.id));
   const urls = new Set(closed.map((c) => normUrl(c.url)).filter((u) => u && !saved.has(u)));
   return tabs
-    .filter((t) => !t.incognito && (ids.has(bindings[String(t.id)]?.id) || urls.has(normUrl(tabUrl(t)))))
+    .filter((t) => {
+      if (t.incognito) return false;
+      const bd = bindings[String(t.id)];
+      if (bd?.id && ids.has(bd.id)) return true;
+      if (bd?.own === 'saved') return false;
+      if (bd?.id && inToday(s.nodes[bd.id])) return false; // 这个标签对应的是今日里另一条
+      return urls.has(normUrl(tabUrl(t)));
+    })
     .map((t) => t.id);
 }
 

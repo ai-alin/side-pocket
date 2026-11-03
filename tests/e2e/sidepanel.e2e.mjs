@@ -54,6 +54,19 @@ await sw.evaluate(() => chrome.tabs.create({ url: 'http://site.test/b', active: 
 await sleep(1500);
 const today2 = await panel.locator('#tabs .row.tab').evaluateAll((rows) => rows.map((r) => r.title));
 check('新打开的网页排在今日最上面', today2[0] === 'http://site.test/b' && today2.includes('http://site.test/a'), JSON.stringify(today2));
+const webTabs = () => sw.evaluate(async () => (await chrome.tabs.query({})).filter((t) => /^https?:/.test(t.url || t.pendingUrl || '')).length);
+const mineCount = () => panel.locator('#tabs .row.tab').count();
+check('「这台电脑」的条数和 Chrome 的网页标签数一致', (await mineCount()) === (await webTabs()), `${await mineCount()} vs ${await webTabs()}`);
+// 在同一个标签里跳来跳去：只更新这一条，不会变多
+for (const u of ['http://site.test/a1', 'http://site.test/a2', 'http://site.test/a3']) {
+  await site.goto(u);
+  await sleep(700);
+}
+await sleep(800);
+const afterNav = await panel.locator('#tabs .row.tab').evaluateAll((rows) => rows.map((r) => r.title));
+check('同一个标签里跳转三次，条数不变、只是网址更新', afterNav.length === today2.length && afterNav.includes('http://site.test/a3') && !afterNav.includes('http://site.test/a'), JSON.stringify(afterNav));
+check('没有「其他电脑 / 没开着的」残留', await panel.locator('#others-wrap').isHidden());
+await site.goto('http://site.test/a'); await sleep(1200);
 await panel.screenshot({ path: (process.env.OUT || '/tmp/') + 'sidepanel-today.png' });
 await panel.locator('#open-settings').click();
 await sleep(300);

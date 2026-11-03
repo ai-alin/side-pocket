@@ -60,53 +60,11 @@ test('删除文件夹连同内容，并记录变更', () => {
   assert.equal(Object.keys(s.nodes).length, 0);
 });
 
-test('今日：打开标签加入，标题变化更新，同网址只留一条', () => {
-  const s = M.emptyState();
-  let { bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com', 'A'), tab(2, 'https://a.com/#x', 'A2'), tab(3, 'chrome://newtab')]);
-  assert.deepEqual(titles(s, M.TODAY), ['A']);
-  assert.equal(bindings['1'].id, bindings['2'].id);
-  assert.equal(bindings['3'], undefined);
-  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com', 'A (3)'), tab(2, 'https://a.com/#x', 'A2')], bindings));
-  assert.deepEqual(titles(s, M.TODAY), ['A (3)']);
-});
-
 test('今日：已收藏的网址不进今日；收藏后今日里那条被去重', () => {
   const s = M.emptyState();
   M.addLink(s, { title: 'Saved', url: 'https://saved.com' });
   M.reconcileTabs(s, [tab(1, 'https://saved.com')]);
   assert.deepEqual(titles(s, M.TODAY), []);
-});
-
-test('今日：本机导航，条目跟着变；导航到收藏网址只解绑不删', () => {
-  const s = M.emptyState();
-  M.addLink(s, { title: 'Saved', url: 'https://saved.com' });
-  let { bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com', 'A')]);
-  const id = bindings['1'].id;
-  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://b.com', 'B')], bindings));
-  assert.equal(bindings['1'].id, id);
-  assert.equal(s.nodes[id].url, 'https://b.com');
-  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://saved.com', 'Saved')], bindings));
-  assert.equal(bindings['1'], undefined);
-  assert.deepEqual(titles(s, M.TODAY), ['B']);
-});
-
-test('今日：单独关标签才删除并处处关闭；关窗口保留；同网址还开着不删', () => {
-  const s = M.emptyState();
-  const tabs = [tab(1, 'https://a.com'), tab(2, 'https://b.com'), tab(3, 'https://b.com')];
-  let { bindings } = M.reconcileTabs(s, tabs);
-  // 关窗口
-  let r = M.tabClosed(s, 1, bindings, tabs.slice(1), { windowClosing: true });
-  assert.equal(r.removed, null);
-  assert.equal(titles(s, M.TODAY).length, 2);
-  // 同网址还有别的标签
-  r = M.tabClosed(s, 2, r.bindings, [tabs[2]]);
-  assert.equal(r.removed, null);
-  // 最后一个 b.com 单独关掉
-  M.takeChanges(s);
-  r = M.tabClosed(s, 3, r.bindings, []);
-  assert.ok(r.removed);
-  assert.equal(M.takeChanges(s).del.get(r.removed), true);
-  assert.deepEqual(titles(s, M.TODAY), ['https://a.com']);
 });
 
 test('今日：别的设备把条目改成别的网址，本机旧标签另起一条，不来回覆盖', () => {
@@ -201,4 +159,113 @@ test('今日：标签里跳到别的网址，条目位置不变', () => {
   assert.deepEqual(titles(s, M.TODAY), ['C', 'A', 'B']);
   ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://a2.com', 'A2'), tab(2, 'https://b.com', 'B'), tab(3, 'https://c.com', 'C')], bindings));
   assert.deepEqual(titles(s, M.TODAY), ['C', 'A2', 'B']);
+});
+
+test('今日：一个标签一条；同网址开两个标签就是两条；标题跟着变', () => {
+  const s = M.emptyState();
+  let { bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com', 'A'), tab(2, 'https://a.com/#x', 'A2'), tab(3, 'chrome://newtab')]);
+  assert.deepEqual(titles(s, M.TODAY), ['A', 'A2']);
+  assert.notEqual(bindings['1'].id, bindings['2'].id);
+  assert.equal(bindings['3'], undefined); // 新标签页不进今日
+  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com', 'A (3)'), tab(2, 'https://a.com/#x', 'A2')], bindings));
+  assert.deepEqual(titles(s, M.TODAY), ['A (3)', 'A2']);
+});
+
+test('今日：标签里点来点去只更新这一条', () => {
+  const s = M.emptyState();
+  let { bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com/', 'A')]);
+  const id = bindings['1'].id;
+  for (const u of ['https://a.com/post/1', 'https://a.com/post/2', 'https://b.com/']) {
+    ({ bindings } = M.reconcileTabs(s, [tab(1, u, u)], bindings));
+  }
+  assert.equal(bindings['1'].id, id);
+  assert.deepEqual(titles(s, M.TODAY), ['https://b.com/']);
+});
+
+test('今日：中途经过 chrome:// 页面，回来后还是同一条', () => {
+  const s = M.emptyState();
+  let { bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com/', 'A')]);
+  const id = bindings['1'].id;
+  ({ bindings } = M.reconcileTabs(s, [tab(1, 'chrome://settings/')], bindings));
+  assert.deepEqual(titles(s, M.TODAY), ['A']);
+  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://c.com/', 'C')], bindings));
+  assert.equal(bindings['1'].id, id);
+  assert.deepEqual(titles(s, M.TODAY), ['C']);
+});
+
+test('今日：跳到另一个标签开着的网址，不留下旧条目', () => {
+  const s = M.emptyState();
+  let { bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com/', 'A'), tab(2, 'https://b.com/', 'B')]);
+  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://b.com/', 'B'), tab(2, 'https://b.com/', 'B')], bindings));
+  assert.deepEqual(titles(s, M.TODAY), ['B', 'B']); // 和 Chrome 一样：两个标签都在 b.com
+  assert.notEqual(bindings['1'].id, bindings['2'].id);
+});
+
+test('今日：从置顶 / 收藏打开的标签归收藏管，在同一网站里怎么点都不进今日，换网站才进', () => {
+  const s = M.emptyState();
+  const saved = new Set([M.normUrl('https://mail.test/')]);
+  let { bindings } = M.reconcileTabs(s, [tab(1, 'https://mail.test/')], {}, new Set(), saved);
+  assert.equal(bindings['1'].own, 'saved');
+  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://mail.test/inbox/123')], bindings, new Set(), saved));
+  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://mail.test/inbox/456')], bindings, new Set(), saved));
+  assert.deepEqual(titles(s, M.TODAY), []);
+  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://other.com/', 'O')], bindings, new Set(), saved));
+  assert.deepEqual(titles(s, M.TODAY), ['O']);
+});
+
+test('今日：标签跳到收藏过的网址，今日里这条去掉，不关标签', () => {
+  const s = M.emptyState();
+  const saved = new Set([M.normUrl('https://saved.com')]);
+  let { bindings } = M.reconcileTabs(s, [tab(1, 'https://a.com', 'A')], {}, new Set(), saved);
+  M.takeChanges(s);
+  ({ bindings } = M.reconcileTabs(s, [tab(1, 'https://saved.com', 'Saved')], bindings, new Set(), saved));
+  assert.equal(bindings['1'].own, 'saved');
+  assert.deepEqual(titles(s, M.TODAY), []);
+  assert.equal([...M.takeChanges(s).del.values()].some(Boolean), false);
+});
+
+test('今日：重启浏览器后标签编号变了，按网址认领原来的条目，不重复', () => {
+  const s = M.emptyState();
+  M.reconcileTabs(s, [tab(1, 'https://a.com', 'A'), tab(2, 'https://a.com', 'A'), tab(3, 'https://b.com', 'B')]);
+  const before = titles(s, M.TODAY);
+  const { bindings } = M.reconcileTabs(s, [tab(11, 'https://a.com', 'A'), tab(12, 'https://a.com', 'A'), tab(13, 'https://b.com', 'B')], {});
+  assert.deepEqual(titles(s, M.TODAY), before);
+  assert.equal(new Set(Object.values(bindings).map((b) => b.id)).size, 3);
+});
+
+test('今日：单独关标签才删除并处处关闭；关窗口保留；同网址另一个标签的条目保留', () => {
+  const s = M.emptyState();
+  const tabs = [tab(1, 'https://a.com'), tab(2, 'https://b.com'), tab(3, 'https://b.com')];
+  let { bindings } = M.reconcileTabs(s, tabs);
+  let r = M.tabClosed(s, 1, bindings, tabs.slice(1), { windowClosing: true });
+  assert.equal(r.removed, null);
+  assert.equal(titles(s, M.TODAY).length, 3);
+  M.takeChanges(s);
+  const keepId = r.bindings['3'].id;
+  r = M.tabClosed(s, 2, r.bindings, [tabs[2]]);
+  assert.ok(r.removed);
+  assert.equal(M.takeChanges(s).del.get(r.removed), true);
+  assert.ok(s.nodes[keepId], '本机还开着的另一个 b.com 的条目不删');
+  assert.equal(titles(s, M.TODAY).length, 2);
+});
+
+test('处处关闭：同一网址别的电脑建的条目一起删，本机别的标签占着的不删', () => {
+  const s = M.emptyState();
+  const a = M.addLink(s, { id: 'mine1', title: 'X', url: 'https://x.com/' }, M.TODAY);
+  M.addLink(s, { id: 'othr1', title: 'X', url: 'https://x.com/' }, M.TODAY); // 另一台电脑建的
+  M.addLink(s, { id: 'mine2', title: 'X', url: 'https://x.com/' }, M.TODAY); // 本机另一个标签
+  M.takeChanges(s);
+  const closed = M.closeEverywhere(s, a, new Set(['mine2']));
+  assert.deepEqual(closed.map((c) => c.id).sort(), ['mine1', 'othr1']);
+  assert.deepEqual(Object.keys(s.nodes), ['mine2']);
+});
+
+test('侧栏分组：本机占着的在「这台电脑」，本机已开着的网址不在另一组重复', () => {
+  const s = M.emptyState();
+  M.addLink(s, { id: 'mine1', title: 'A', url: 'https://a.com/' }, M.TODAY);
+  M.addLink(s, { id: 'othr1', title: 'A', url: 'https://a.com/' }, M.TODAY);
+  M.addLink(s, { id: 'othr2', title: 'B', url: 'https://b.com/' }, M.TODAY);
+  const g = M.todayGroups(s, new Set(['mine1']), new Set([M.normUrl('https://a.com/')]));
+  assert.deepEqual(g.mine, ['mine1']);
+  assert.deepEqual(g.others, ['othr2']);
 });

@@ -44,7 +44,6 @@
           <header class="sec-head">
             <span>今日</span>
             <span id="tab-count" class="num"></span>
-            <button id="clear-today" class="sec-act" type="button" title="清除本机没有打开的条目。别的设备上还开着的，会在那台设备上重新出现。" hidden>清除未打开</button>
           </header>
           <!-- 新打开的网页出现在列表最上面，所以新建按钮也放在最上面 -->
           <button id="new-tab" class="row ghost-row" type="button">
@@ -52,6 +51,15 @@
             <span class="title">新建标签页</span>
           </button>
           <div id="tabs" class="tree"></div>
+          <!-- 别的电脑上开着的、关浏览器前留下的 -->
+          <div id="others-wrap" hidden>
+            <header class="sec-head sub-head">
+              <span>其他电脑 / 没开着的</span>
+              <span id="others-count" class="num"></span>
+              <button id="clear-today" class="sec-act" type="button" title="清除这一组。别的电脑上还开着的，会在那台电脑上重新出现。">清除</button>
+            </header>
+            <div id="tabs-others" class="tree"></div>
+          </div>
         </section>
       </div>
     </div>

@@ -152,6 +152,7 @@ img { -webkit-user-drag: none; pointer-events: none; }
   font-weight: 650;
   color: var(--muted);
 }
+.sub-head { margin-top: 10px; font-weight: 500; }
 .sec-head .num { font-weight: 500; font-variant-numeric: tabular-nums; }
 .sec-act {
   margin-left: auto;

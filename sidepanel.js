@@ -14,6 +14,9 @@ let v = M.view(state);
 let tabs = []; // 所有窗口的普通标签
 let winId = null; // 侧栏所在窗口
 let activeUrl = ''; // 「当前标签」的网址，用来高亮
+const BIND_KEY = 'tabBindings'; // 后台记在 storage.session 里的「本机标签 → 今日条目」
+let bindings = {};
+let tabByNode = new Map(); // 今日条目 id -> 本机占着它的标签
 let renaming = null; // 正在重命名的节点 id
 let drag = null; // { id }
 let inflight = 0; // 已在本地生效、后台还没确认的操作数
@@ -95,6 +98,14 @@ function updateActiveUrl() {
   activeUrl = t ? M.normUrl(t.url || t.pendingUrl) : '';
 }
 
+/** 条目对应的本机标签：今日条目按后台的绑定找，收藏 / 置顶按网址找 */
+function tabOfNode(n) {
+  return tabByNode.get(n.id) || findTab(n.url);
+}
+
+/** 今日条目：开着 = 本机有标签占着它；高亮 = 占着它的就是当前标签 */
+const todayCls = (t) => (t ? ' open' : '') + (t?.active && t.windowId === winId ? ' active' : '');
+
 const openCls = (t, url) => (t ? ' open' : '') + (activeUrl && M.normUrl(url) === activeUrl ? ' active' : '');
 
 async function copyText(text) {
@@ -175,9 +186,21 @@ async function refresh({ force = false } = {}) {
     return;
   }
   stale = false;
-  const [all, , wid] = await Promise.all([chrome.tabs.query({}), loadState(), winId ?? resolveWindowId()]);
+  const [all, , wid, sess] = await Promise.all([
+    chrome.tabs.query({}),
+    loadState(),
+    winId ?? resolveWindowId(),
+    chrome.storage.session.get(BIND_KEY),
+  ]);
   tabs = all.filter((t) => !isSelf(t));
   winId = wid;
+  bindings = sess[BIND_KEY] || {};
+  tabByNode = new Map();
+  // 同一条被几个标签占着时（不该发生，兜底），优先当前窗口的
+  for (const t of [...tabs].sort((a, c) => (a.windowId === winId ? 0 : 1) - (c.windowId === winId ? 0 : 1))) {
+    const bd = bindings[String(t.id)];
+    if (bd?.id && !tabByNode.has(bd.id)) tabByNode.set(bd.id, t);
+  }
   updateActiveUrl();
   render();
 }
@@ -213,7 +236,7 @@ async function op(name, args = {}) {
 }
 
 async function openNode(n) {
-  const t = findTab(n.url);
+  const t = tabOfNode(n);
   if (t) {
     await chrome.tabs.update(t.id, { active: true });
     if (t.windowId !== winId) await chrome.windows.update(t.windowId, { focused: true });
@@ -442,15 +465,18 @@ function folderRow(n) {
   );
 }
 
+/**
+ * 今日分两组：「这台电脑」和 Chrome 的标签一一对应（新开的在最上面）；
+ * 「其他电脑 / 没开着的」是别的电脑上开着的、或关浏览器前留下的。网址在本机开着的不重复显示。
+ */
 function renderTabs() {
-  const ids = v.order[M.TODAY];
-  $('#tab-count').textContent = ids.length ? String(ids.length) : '';
-  $('#clear-today').hidden = !ids.some((id) => !findTab(state.nodes[id].url));
-  const rows = ids.map((id) => {
+  const localUrls = new Set(tabs.map((t) => M.normUrl(t.url || t.pendingUrl)));
+  const { mine, others } = M.todayGroups(state, new Set(tabByNode.keys()), localUrls);
+  const row = (id) => {
     const n = state.nodes[id];
     return el(
       'div',
-      { class: 'row tab' + openCls(findTab(n.url), n.url), draggable: 'true', 'data-id': n.id, title: n.url },
+      { class: 'row tab' + todayCls(tabByNode.get(id)), draggable: 'true', 'data-id': n.id, title: n.url },
       favImg(n.url, 'fav'),
       titleNode(n),
       el(
@@ -461,9 +487,14 @@ function renderTabs() {
         actBtn('close', '关闭（所有设备）', SVG.x),
       ),
     );
-  });
+  };
+  $('#tab-count').textContent = mine.length ? String(mine.length) : '';
+  const rows = mine.map(row);
   if (!rows.length) rows.push(el('div', { class: 'empty' }, '打开的网页会出现在这里，并同步到你的其他设备'));
   patchChildren($('#tabs'), rows);
+  $('#others-wrap').hidden = !others.length;
+  $('#others-count').textContent = others.length ? String(others.length) : '';
+  patchChildren($('#tabs-others'), others.map(row));
 }
 
 /* ---------- 搜索 ---------- */
@@ -489,7 +520,7 @@ function renderResults() {
       // 标题命中优先，其次开着的优先
       const at = a.title.toLowerCase().includes(q) ? 0 : 1;
       const bt = b.title.toLowerCase().includes(q) ? 0 : 1;
-      return at - bt || (findTab(a.url) ? 0 : 1) - (findTab(b.url) ? 0 : 1);
+      return at - bt || (tabOfNode(a) ? 0 : 1) - (tabOfNode(b) ? 0 : 1);
     })
     .slice(0, 50);
   selected = Math.min(selected, Math.max(results.length - 1, 0));
@@ -497,7 +528,7 @@ function renderResults() {
   const rows = results.map((n, i) =>
     el(
       'div',
-      { class: 'row link' + openCls(findTab(n.url), n.url) + (i === selected ? ' selected' : ''), 'data-id': n.id, title: n.url },
+      { class: 'row link' + (v.parent[n.id] === M.TODAY ? todayCls(tabByNode.get(n.id)) : openCls(findTab(n.url), n.url)) + (i === selected ? ' selected' : ''), 'data-id': n.id, title: n.url },
       favImg(n.url, 'fav'),
       el('span', { class: 'title' }, displayTitle(n)),
       el('span', { class: 'where' }, whereOf(n.id)),
@@ -582,7 +613,7 @@ function nodeMenu(id) {
       { label: count ? `删除文件夹（含 ${count} 项）` : '删除文件夹', danger: true, run: () => op('remove', { id }) },
     ];
   }
-  const t = findTab(n.url);
+  const t = tabOfNode(n);
   if (parent === M.TODAY) {
     return [
       { label: t ? '切换到该标签' : '打开', run: () => openNode(n) },
@@ -640,7 +671,7 @@ document.addEventListener('click', (e) => {
   if (act === 'pin') return op('pin', { id: node.id });
   if (act === 'close') return op('closeToday', { id: node.id });
   if (act === 'close-tab') {
-    const t = findTab(node.url);
+    const t = tabOfNode(node);
     if (t) chrome.tabs.remove(t.id);
     return;
   }
@@ -721,7 +752,7 @@ function dropTarget(e) {
   // 今日区：只接收链接；今日内上下排序，并在同一窗口里联动移动真实标签
   if (under.closest('#tabs-section')) {
     if (isFolder) return null;
-    const row = under.closest('#tabs .row.tab[data-id]');
+    const row = under.closest('#tabs-section .row.tab[data-id]');
     if (!row) return { parent: M.TODAY, index: null, el: $('#tabs'), cls: 'drop-zone' };
     const targetId = row.dataset.id;
     if (targetId === drag.id) return null;
@@ -729,8 +760,8 @@ function dropTarget(e) {
     if (idx === -1) return null;
     const r = row.getBoundingClientRect();
     const after = (e.clientY - r.top) / Math.max(r.height, 1) >= 0.5;
-    const dragTab = findTab(dragNode.url);
-    const targetTab = findTab(state.nodes[targetId].url);
+    const dragTab = tabOfNode(dragNode);
+    const targetTab = tabOfNode(state.nodes[targetId]);
     let tabMove = null;
     if (dragTab && targetTab && dragTab.windowId === targetTab.windowId) {
       let index = after ? targetTab.index + 1 : targetTab.index;
@@ -857,6 +888,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 chrome.storage.session.onChanged.addListener((changes) => {
+  if (changes[BIND_KEY]) refreshSoon(30); // 标签和今日条目的对应关系变了
   const c = changes[VIEW_KEY];
   if (!c) return;
   showSync(c.newValue?.status);
