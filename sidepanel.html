@@ -12,7 +12,7 @@
     <header class="top-bar">
       <label class="search">
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.6" stroke="currentColor" stroke-width="1.6"/><path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-        <input id="search" type="search" placeholder="搜索收藏和标签" autocomplete="off" spellcheck="false" aria-label="搜索收藏和标签" />
+        <input id="search" type="search" placeholder="搜索标签、收藏和其他电脑" autocomplete="off" spellcheck="false" aria-label="搜索标签、收藏和其他电脑" />
       </label>
       <button id="toggle-collapse" class="icon-btn" type="button" title="关闭侧边栏" aria-label="关闭侧边栏">
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v10" stroke="currentColor" stroke-width="1.4"/></svg>
@@ -40,26 +40,23 @@
           </button>
         </section>
 
-        <section id="tabs-section" class="section">
+        <!-- 和 Chrome 标签栏一模一样：这个窗口的所有标签，顺序一致 -->
+        <section id="window-section" class="section">
           <header class="sec-head">
-            <span>今日</span>
+            <span>这个窗口</span>
             <span id="tab-count" class="num"></span>
           </header>
-          <!-- 新打开的网页出现在列表最上面，所以新建按钮也放在最上面 -->
+          <div id="tabs" class="tree"></div>
           <button id="new-tab" class="row ghost-row" type="button">
             <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
             <span class="title">新建标签页</span>
           </button>
-          <div id="tabs" class="tree"></div>
-          <!-- 别的电脑上开着的、关浏览器前留下的 -->
-          <div id="others-wrap" hidden>
-            <header class="sec-head sub-head">
-              <span>其他电脑 / 没开着的</span>
-              <span id="others-count" class="num"></span>
-              <button id="clear-today" class="sec-act" type="button" title="清除这一组。别的电脑上还开着的，会在那台电脑上重新出现。">清除</button>
-            </header>
-            <div id="tabs-others" class="tree"></div>
-          </div>
+        </section>
+
+        <!-- 别的电脑上开着的网页：只读，点一下在这台电脑打开 -->
+        <section id="devices-section" class="section">
+          <header class="sec-head"><span>其他电脑</span></header>
+          <div id="devices" class="tree"></div>
         </section>
       </div>
     </div>
@@ -73,7 +70,11 @@
   </main>
 
   <div id="settings-pop" class="settings-pop" hidden>
-    <div class="settings-title">快捷键</div>
+    <div class="settings-title">这台电脑的名字</div>
+    <input id="device-name" class="settings-input" type="text" maxlength="40" placeholder="比如：公司、家里" autocomplete="off" spellcheck="false" aria-label="这台电脑的名字" />
+    <p class="settings-note settings-note-tight">在其他电脑的「其他电脑」里显示这个名字。</p>
+
+    <div class="settings-title settings-title-gap">快捷键</div>
     <div class="shortcut-row">
       <span>打开 / 关闭侧边栏</span>
       <kbd id="shortcut-key" class="shortcut-key"></kbd>

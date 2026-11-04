@@ -184,7 +184,7 @@ test('迁移：旧的收藏和置顶写进书签，重复执行不会重复', as
   M.addLink(s, { id: 'lnk1', title: 'Claude', url: 'https://claude.ai/' }, ai);
   M.addLink(s, { id: 'lnk2', title: 'Ollama', url: 'https://ollama.com/' }, sub);
   M.addLink(s, { id: 'lnk3', title: 'Docs', url: 'https://docs.test/' });
-  M.addLink(s, { id: 'tod1', title: 'Today', url: 'https://today.test/' }, M.TODAY);
+  s.nodes.tod1 = { id: 'tod1', type: 'link', title: 'Today', url: 'https://today.test/', parent: 'today', pos: 0 }; // 旧格式里的今日条目
   M.setColor(s, ai, 'green');
   M.setCollapsed(s, sub, true);
 
@@ -204,14 +204,4 @@ test('迁移：旧的收藏和置顶写进书签，重复执行不会重复', as
   const again = await B.importNodes(bm, ids, s.nodes); // 中途失败重试 / 另一台电脑也迁移了一次
   assert.equal(again.added, 0);
   assert.equal(Object.keys((await load(bm, ids)).nodes).length, 6);
-});
-
-test('今日：书签里收藏过的网址不进今日', () => {
-  const s = M.emptyState();
-  const saved = new Set([M.normUrl('https://saved.com/')]);
-  M.reconcileTabs(s, [{ id: 1, url: 'https://saved.com/', title: 'S', windowId: 1, index: 0 }, { id: 2, url: 'https://new.com/', title: 'N', windowId: 1, index: 1 }], {}, new Set(), saved);
-  const v = M.view(s);
-  assert.deepEqual(v.order[M.TODAY].map((id) => s.nodes[id].title), ['N']);
-  const closed = M.tabsToClose(s, [{ id: 'x', url: 'https://saved.com/' }], [{ id: 1, url: 'https://saved.com/' }], {}, saved);
-  assert.deepEqual(closed, []); // 收藏着的网址，别的设备关今日条目时不跟着关
 });

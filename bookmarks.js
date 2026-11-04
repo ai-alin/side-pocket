@@ -180,7 +180,7 @@ export function bmIndex(nodes, v, parent, index, bid) {
 }
 
 export async function addFolder(bm, ids, nodes, v, { title, parent = M.ROOT, index } = {}) {
-  if (parent === M.PINNED || parent === M.TODAY) throw new Error('该区域不能放文件夹');
+  if (parent === M.PINNED) throw new Error('该区域不能放文件夹');
   if (!isContainer(nodes, parent)) throw new Error('目标不存在: ' + parent);
   const bid = containerBid(ids, parent);
   const b = await bm.create(withIndex({ parentId: bid, title: clip(title) || '新文件夹' }, bmIndex(nodes, v, parent, index, bid)));
@@ -228,7 +228,9 @@ export async function removeSaved(bm, nodes, id) {
  * 按网址去重、同名文件夹合并，所以重复执行（迁移中途失败重试、两台电脑都迁移）不会出现重复。
  * 返回 { added, colors, collapsed, drop }：drop 是写完以后要从旧存储里删掉的顶层节点 id。
  */
-export async function importNodes(bm, ids, nodes) {
+export async function importNodes(bm, ids, allNodes) {
+  // 今日条目（parent 'today'）绝不能搬进书签；model.view 已经不认 today，会把它们当成收藏
+  const nodes = Object.fromEntries(Object.entries(allNodes).filter(([, n]) => n.parent !== 'today'));
   const v = M.view({ nodes });
   const [rootNode] = await bm.getSubTree(ids.root);
   const urls = new Set();

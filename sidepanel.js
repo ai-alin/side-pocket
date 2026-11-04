@@ -1,37 +1,42 @@
-// 侧栏界面：只负责显示和把用户操作发给后台。
-// 数据由 background.js 维护在 storage.local；后台改完数据会更新 storage.session 里的 VIEW_KEY，
-// 这里收到通知后重新读取。侧栏放在 Chrome 侧边栏里，每个窗口一个。
+// 侧栏界面。放在 Chrome 侧边栏里，每个窗口一个。分四块，各读各的数据：
+//   置顶、收藏   Chrome 书签（bookmarks.js）；修改发给后台
+//   这个窗口     直接读 chrome.tabs，和 Chrome 标签栏一模一样（包括顺序、新标签页、设置页），不加工
+//   其他电脑     读 chrome.storage.sync 里别的电脑上传的清单（devices.js），只读
+// 「开着」的标记：收藏 / 其他电脑的网页，网址在本机任意窗口里开着就算。
 
 import * as M from './model.js';
-import { LOCAL_KEY, VIEW_KEY } from './store.js';
 import * as B from './bookmarks.js';
+import * as D from './devices.js';
 
 const $ = (sel) => document.querySelector(sel);
 const SELF_PREFIX = chrome.runtime.getURL('');
+const DEV_COLLAPSE_KEY = 'ui.deviceCollapsed'; // storage.local：{ 设备 id: true }
 
-let state = M.emptyState();
+let state = M.emptyState(); // 置顶和收藏
 let v = M.view(state);
-let tabs = []; // 所有窗口的普通标签
+let tabs = []; // 所有窗口的标签（不含侧栏自己）
+let winTabs = []; // 这个窗口的标签，按标签栏顺序
 let winId = null; // 侧栏所在窗口
-let activeUrl = ''; // 「当前标签」的网址，用来高亮
-const BIND_KEY = 'tabBindings'; // 后台记在 storage.session 里的「本机标签 → 今日条目」
-let bindings = {};
-let tabByNode = new Map(); // 今日条目 id -> 本机占着它的标签
-let renaming = null; // 正在重命名的节点 id
-let drag = null; // { id }
+let activeUrl = ''; // 这个窗口当前标签的网址，用来高亮收藏
+let localUrls = new Set(); // 本机开着的网址
+let devices = []; // 其他电脑
+let selfId = '';
+let devCollapsed = {};
+let renaming = null; // 正在重命名的收藏 id
+let drag = null; // { kind: 'node', id } | { kind: 'tab', tabId } | { kind: 'remote', url, title }
 let inflight = 0; // 已在本地生效、后台还没确认的操作数
 let stale = false;
 let rendering = false;
 let syncStatus = 'saved';
 let query = ''; // 搜索词
 let selected = 0; // 搜索结果里键盘选中的下标
-let results = []; // 当前搜索结果（节点）
+let results = []; // 当前搜索结果
 
 /* ---------- 工具 ---------- */
 
 function favicon(url, size = 32) {
   const u = new URL(chrome.runtime.getURL('/_favicon/'));
-  u.searchParams.set('pageUrl', url);
+  u.searchParams.set('pageUrl', url || 'chrome://newtab/');
   u.searchParams.set('size', String(size));
   return u.toString();
 }
@@ -71,42 +76,31 @@ function el(tag, attrs = {}, ...children) {
   return e;
 }
 
-function displayTitle(n) {
-  if (n.title) return n.title;
+function hostOf(url) {
   try {
-    return new URL(n.url).hostname;
+    return new URL(url).hostname;
   } catch {
-    return n.url;
+    return url;
   }
 }
 
-const isSelf = (t) => (t.url || t.pendingUrl || '').startsWith(SELF_PREFIX);
+function displayTitle(n) {
+  return n.title || hostOf(n.url);
+}
 
-/** 找到该网址已打开的标签：优先当前窗口 */
+const tabUrl = (t) => t.url || t.pendingUrl || '';
+const tabTitle = (t) => t.title || (tabUrl(t).startsWith('chrome://newtab') ? '新标签页' : tabUrl(t)) || '新标签页';
+const isSelf = (t) => tabUrl(t).startsWith(SELF_PREFIX);
+
+/** 找到该网址已打开的标签：优先这个窗口 */
 function findTab(url) {
   const u = M.normUrl(url);
-  const hits = tabs.filter((t) => M.normUrl(t.url || t.pendingUrl) === u);
+  const hits = tabs.filter((t) => M.normUrl(tabUrl(t)) === u);
   return hits.find((t) => t.windowId === winId) || hits[0] || null;
 }
 
-/**
- * 贴边栏里，「当前标签」就是侧栏所在的这个标签页：看得见这个侧栏时它一定是当前标签，
- * 不用等标签列表刷新，切过来的第一帧高亮就是对的。其他模式用所在窗口的活动标签。
- */
-function updateActiveUrl() {
-  const t = tabs.find((x) => x.active && x.windowId === winId);
-  activeUrl = t ? M.normUrl(t.url || t.pendingUrl) : '';
-}
-
-/** 条目对应的本机标签：今日条目按后台的绑定找，收藏 / 置顶按网址找 */
-function tabOfNode(n) {
-  return tabByNode.get(n.id) || findTab(n.url);
-}
-
-/** 今日条目：开着 = 本机有标签占着它；高亮 = 占着它的就是当前标签 */
-const todayCls = (t) => (t ? ' open' : '') + (t?.active && t.windowId === winId ? ' active' : '');
-
-const openCls = (t, url) => (t ? ' open' : '') + (activeUrl && M.normUrl(url) === activeUrl ? ' active' : '');
+/** 收藏 / 置顶：开着 = 本机有标签开着这个网址；高亮 = 就是这个窗口的当前标签 */
+const openCls = (url) => (localUrls.has(M.normUrl(url)) ? ' open' : '') + (activeUrl && M.normUrl(url) === activeUrl ? ' active' : '');
 
 async function copyText(text) {
   try {
@@ -132,10 +126,9 @@ function showStatus(text, kind = 'info', ms = 0) {
 }
 
 const SYNC_MSG = {
-  quota: '同步空间已满（Chrome 限制约 100KB），部分更改只保存在本机。删掉一些条目后会自动重试。',
-  rate: '写入太频繁，被 Chrome 限流，稍后自动重试同步。',
-  toolarge: '有条目的网址太长（超过 Chrome 单项 8KB 限制），它只保存在本机。',
-  error: '同步失败，更改已保存在本机，稍后自动重试。',
+  quota: '同步空间不够，这台电脑的网页只同步了一部分。可以在「其他电脑」里移除不再用的旧设备。',
+  rate: '写入太频繁，被 Chrome 限流，稍后自动重试。',
+  error: '同步失败，稍后自动重试。',
 };
 
 function showSync(st) {
@@ -143,7 +136,7 @@ function showSync(st) {
   const badge = $('#sync-state');
   badge.textContent = SYNC_MSG[st] ? '未同步' : '已同步';
   badge.classList.toggle('warn', !!SYNC_MSG[st]);
-  badge.title = SYNC_MSG[st] || '今日已同步到你的 Google 账号；置顶和收藏存在 Chrome 书签里，由 Chrome 同步';
+  badge.title = SYNC_MSG[st] || '这台电脑开着的网页已同步到你的 Google 账号；置顶和收藏存在 Chrome 书签里';
   if (st === syncStatus) return;
   syncStatus = st;
   if (SYNC_MSG[st]) showStatus(SYNC_MSG[st], 'warn', 8000);
@@ -152,31 +145,36 @@ function showSync(st) {
 
 /* ---------- 数据 ---------- */
 
-/** 今日来自后台维护的 storage.local；收藏和置顶直接读 Chrome 书签（只读，不建文件夹，建由后台负责） */
-async function loadState() {
+/** 置顶和收藏直接读 Chrome 书签（只读，不建文件夹，建由后台负责） */
+async function loadSaved() {
   const [d, sync, ids] = await Promise.all([
-    chrome.storage.local.get([LOCAL_KEY, B.COLLAPSE_KEY]),
+    chrome.storage.local.get(B.COLLAPSE_KEY),
     chrome.storage.sync.get(B.COLOR_KEY),
     B.resolveRoot(chrome.bookmarks).catch(() => null),
   ]);
-  const saved = await B.loadNodes(chrome.bookmarks, ids, { colors: sync[B.COLOR_KEY], collapsed: d[B.COLLAPSE_KEY] }).catch((e) => {
+  const nodes = await B.loadNodes(chrome.bookmarks, ids, { colors: sync[B.COLOR_KEY], collapsed: d[B.COLLAPSE_KEY] }).catch((e) => {
     console.warn('[side-pocket] 读取书签失败', e);
     return {};
   });
-  state = { nodes: { ...(d[LOCAL_KEY]?.nodes || {}), ...saved } };
+  state = { nodes };
   if (renaming && !state.nodes[renaming]) renaming = null;
+}
+
+async function loadDevices() {
+  const [all, local] = await Promise.all([chrome.storage.sync.get(null), chrome.storage.local.get(['deviceId', DEV_COLLAPSE_KEY])]);
+  selfId = local.deviceId || '';
+  devCollapsed = local[DEV_COLLAPSE_KEY] || {};
+  devices = D.parseDevices(all, selfId);
 }
 
 async function resolveWindowId() {
   try {
     const cur = await chrome.windows.getCurrent();
-    if (cur?.type === 'normal') return cur.id;
-    const last = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
-    if (last?.id != null) return last.id;
+    if (cur?.id != null) return cur.id;
   } catch (e) {
     console.warn('[side-pocket] 取窗口失败', e);
   }
-  return tabs[0]?.windowId ?? null;
+  return null;
 }
 
 /** force：侧栏暂时看不见时也刷新（第一次加载） */
@@ -186,27 +184,18 @@ async function refresh({ force = false } = {}) {
     return;
   }
   stale = false;
-  const [all, , wid, sess] = await Promise.all([
-    chrome.tabs.query({}),
-    loadState(),
-    winId ?? resolveWindowId(),
-    chrome.storage.session.get(BIND_KEY),
-  ]);
-  tabs = all.filter((t) => !isSelf(t));
+  const [all, , , wid] = await Promise.all([chrome.tabs.query({}), loadSaved(), loadDevices(), winId ?? resolveWindowId()]);
   winId = wid;
-  bindings = sess[BIND_KEY] || {};
-  tabByNode = new Map();
-  // 同一条被几个标签占着时（不该发生，兜底），优先当前窗口的
-  for (const t of [...tabs].sort((a, c) => (a.windowId === winId ? 0 : 1) - (c.windowId === winId ? 0 : 1))) {
-    const bd = bindings[String(t.id)];
-    if (bd?.id && !tabByNode.has(bd.id)) tabByNode.set(bd.id, t);
-  }
-  updateActiveUrl();
+  tabs = all.filter((t) => !isSelf(t));
+  winTabs = tabs.filter((t) => t.windowId === winId).sort((a, b) => a.index - b.index);
+  localUrls = new Set(tabs.filter((t) => !t.incognito).map((t) => M.normUrl(tabUrl(t))));
+  const act = winTabs.find((t) => t.active);
+  activeUrl = act ? M.normUrl(tabUrl(act)) : '';
   render();
 }
 
 let refreshTimer;
-function refreshSoon(ms = 80) {
+function refreshSoon(ms = 60) {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(refresh, ms);
 }
@@ -215,7 +204,6 @@ function refreshSoon(ms = 80) {
 async function op(name, args = {}) {
   try {
     M.applyOp(state, name, args);
-    M.takeChanges(state);
   } catch (e) {
     console.warn('[side-pocket]', e);
     return null;
@@ -235,14 +223,22 @@ async function op(name, args = {}) {
   }
 }
 
-async function openNode(n) {
-  const t = tabOfNode(n);
-  if (t) {
-    await chrome.tabs.update(t.id, { active: true });
-    if (t.windowId !== winId) await chrome.windows.update(t.windowId, { focused: true });
-  } else {
-    await chrome.tabs.create({ url: n.url, windowId: winId ?? undefined });
-  }
+/** 打开网址：本机已经开着就切过去，否则在这个窗口新开 */
+async function openUrl(url) {
+  const t = findTab(url);
+  if (t) return activateTab(t);
+  await chrome.tabs.create({ url, windowId: winId ?? undefined });
+}
+
+async function activateTab(t) {
+  await chrome.tabs.update(t.id, { active: true });
+  if (t.windowId !== winId) await chrome.windows.update(t.windowId, { focused: true });
+}
+
+/** 把一个网页存进收藏 / 置顶（已收藏过的网址会挪过去，不重复建） */
+function saveUrl(url, title, parent = M.ROOT, index) {
+  if (!/^(https?|file|ftp|chrome):/i.test(url || '')) return showStatus('这个网页不能收藏', 'warn', 2500);
+  return op('saveTab', { url, title, parent, index });
 }
 
 /** 新建文件夹并进入重命名。文件夹建在书签里，真正的 id 由后台返回，先用临时 id 显示 */
@@ -267,10 +263,7 @@ function startRename(id) {
 function render() {
   v = M.view(state);
   const old = document.querySelector('input.rename');
-  const draft =
-    old && old.dataset.id === renaming
-      ? { value: old.value, start: old.selectionStart, end: old.selectionEnd }
-      : null;
+  const draft = old && old.dataset.id === renaming ? { value: old.value, start: old.selectionStart, end: old.selectionEnd } : null;
   rendering = true;
   try {
     const searching = !!query;
@@ -280,7 +273,8 @@ function render() {
     else {
       renderPinned();
       renderSaved();
-      renderTabs();
+      renderWindow();
+      renderDevices();
     }
   } finally {
     rendering = false;
@@ -300,16 +294,21 @@ function render() {
 
 /* ---------- 增量更新 DOM ---------- */
 // 每次渲染先生成新节点，再和页面上已有的对比，只改有变化的地方：
-// 同一个条目（data-id / data-folder）复用原来的元素，网站图标不会重新加载，
-// 鼠标下面的那一行也不会因为被换掉而闪一下悬停效果；拖拽中的元素也不会被换掉。
+// 同一个条目（data-id / data-folder / data-tab / data-remote / data-device）复用原来的元素，
+// 网站图标不会重新加载，鼠标下面的那一行也不会闪；拖拽中的元素也不会被换掉。
+
+const KEY_ATTRS = ['data-id', 'data-folder', 'data-tab', 'data-remote', 'data-device'];
 
 function keyOf(n) {
   if (n.nodeType !== 1) return null;
-  const id = n.getAttribute('data-id') ?? n.getAttribute('data-folder');
-  return id == null ? null : n.nodeName + '#' + id;
+  for (const a of KEY_ATTRS) {
+    const id = n.getAttribute(a);
+    if (id != null) return n.nodeName + '#' + a + '#' + id;
+  }
+  return null;
 }
 
-/** 输入框（重命名）不复用：它带着自己的事件和草稿，render() 会另外恢复内容和光标 */
+/** 输入框（重命名、设备名）不复用：它带着自己的事件和草稿 */
 const canPatch = (o, n) => o.nodeType === n.nodeType && o.nodeName === n.nodeName && o.nodeName !== 'INPUT';
 
 function patchNode(o, n) {
@@ -359,7 +358,7 @@ function renderPinned() {
       const n = state.nodes[id];
       return el(
         'div',
-        { class: 'tile' + openCls(findTab(n.url), n.url), title: displayTitle(n), draggable: 'true', 'data-id': id, role: 'button', tabindex: '0' },
+        { class: 'tile' + openCls(n.url), title: displayTitle(n), draggable: 'true', 'data-id': id, role: 'button', tabindex: '0' },
         favImg(n.url, '', 64),
       );
     }),
@@ -378,7 +377,7 @@ function folderStats(id) {
       open += s.open;
     } else {
       total++;
-      if (findTab(n.url)) open++;
+      if (localUrls.has(M.normUrl(n.url))) open++;
     }
   }
   return { total, open };
@@ -400,7 +399,7 @@ function renderSaved() {
       );
     });
   const rows = walk(M.ROOT);
-  if (!rows.length) rows.push(el('div', { class: 'empty' }, '还没有收藏。把「今日」里的网站拖到这里。'));
+  if (!rows.length) rows.push(el('div', { class: 'empty' }, '还没有收藏。把下面的网页拖到这里。'));
   patchChildren($('#saved'), rows);
 }
 
@@ -427,16 +426,16 @@ function titleNode(n) {
 }
 
 function linkRow(n) {
-  const t = findTab(n.url);
+  const open = localUrls.has(M.normUrl(n.url));
   return el(
     'div',
-    { class: 'row link' + openCls(t, n.url), draggable: 'true', 'data-id': n.id, title: n.url },
+    { class: 'row link' + openCls(n.url), draggable: 'true', 'data-id': n.id, title: n.url },
     favImg(n.url, 'fav'),
     titleNode(n),
     el(
       'span',
       { class: 'actions' },
-      t ? actBtn('close-tab', '关闭标签（保留在收藏里）', SVG.x) : null,
+      open ? actBtn('close-tab', '关闭标签（保留在收藏里）', SVG.x) : null,
       actBtn('menu', '更多', SVG.more),
     ),
   );
@@ -465,41 +464,71 @@ function folderRow(n) {
   );
 }
 
-/**
- * 今日分两组：「这台电脑」和 Chrome 的标签一一对应（新开的在最上面）；
- * 「其他电脑 / 没开着的」是别的电脑上开着的、或关浏览器前留下的。网址在本机开着的不重复显示。
- */
-function renderTabs() {
-  const localUrls = new Set(tabs.map((t) => M.normUrl(t.url || t.pendingUrl)));
-  const { mine, others } = M.todayGroups(state, new Set(tabByNode.keys()), localUrls);
-  const row = (id) => {
-    const n = state.nodes[id];
-    return el(
-      'div',
-      { class: 'row tab' + todayCls(tabByNode.get(id)), draggable: 'true', 'data-id': n.id, title: n.url },
-      favImg(n.url, 'fav'),
-      titleNode(n),
+/** 这个窗口：和 Chrome 标签栏一模一样，一个标签一行 */
+function tabRow(t) {
+  const url = tabUrl(t);
+  const web = /^(https?|file|ftp):/i.test(url);
+  return el(
+    'div',
+    { class: 'row tab open' + (t.active ? ' active' : '') + (t.pinned ? ' chrome-pinned' : ''), draggable: 'true', 'data-tab': String(t.id), title: url },
+    favImg(url, 'fav'),
+    el('span', { class: 'title' }, tabTitle(t)),
+    el(
+      'span',
+      { class: 'actions' },
+      web ? actBtn('save', '收藏', SVG.save) : null,
+      web ? actBtn('pin', '置顶', SVG.pin) : null,
+      actBtn('close', '关闭标签', SVG.x),
+    ),
+  );
+}
+
+function renderWindow() {
+  $('#tab-count').textContent = winTabs.length ? String(winTabs.length) : '';
+  patchChildren($('#tabs'), winTabs.map(tabRow));
+}
+
+function remoteRow(dev, i) {
+  const t = dev.tabs[i];
+  const open = localUrls.has(M.normUrl(t.url));
+  return el(
+    'div',
+    { class: 'row remote' + (open ? ' local-open' : ''), draggable: 'true', 'data-remote': `${dev.id}|${i}`, title: t.url },
+    favImg(t.url, 'fav'),
+    el('span', { class: 'title' }, t.title || hostOf(t.url)),
+    open ? el('span', { class: 'tag' }, '已开着') : null,
+    el('span', { class: 'actions' }, actBtn('save', '收藏', SVG.save), actBtn('pin', '置顶', SVG.pin)),
+  );
+}
+
+/** 其他电脑：按设备分组，只读；点一下在这台电脑打开 */
+function renderDevices() {
+  const out = [];
+  for (const dev of devices) {
+    const collapsed = !!devCollapsed[dev.id];
+    out.push(
       el(
-        'span',
-        { class: 'actions' },
-        actBtn('save', '保存到收藏', SVG.save),
-        actBtn('pin', '置顶', SVG.pin),
-        actBtn('close', '关闭（所有设备）', SVG.x),
+        'div',
+        { class: 'row device-head' + (collapsed ? ' is-collapsed' : ''), 'data-device': dev.id, title: `${dev.name}：最后更新 ${new Date(dev.at).toLocaleString()}` },
+        svgIcon(SVG.caret, 'caret'),
+        el('span', { class: 'title' }, dev.name),
+        el('span', { class: 'when' }, D.relTime(dev.at)),
+        el('span', { class: 'cnt' }, el('span', { class: 'n' }, String(dev.tabs.length))),
+        el('span', { class: 'actions' }, actBtn('device-menu', '更多', SVG.more)),
       ),
     );
-  };
-  $('#tab-count').textContent = mine.length ? String(mine.length) : '';
-  const rows = mine.map(row);
-  if (!rows.length) rows.push(el('div', { class: 'empty' }, '打开的网页会出现在这里，并同步到你的其他设备'));
-  patchChildren($('#tabs'), rows);
-  $('#others-wrap').hidden = !others.length;
-  $('#others-count').textContent = others.length ? String(others.length) : '';
-  patchChildren($('#tabs-others'), others.map(row));
+    if (collapsed) continue;
+    dev.tabs.forEach((_, i) => out.push(remoteRow(dev, i)));
+    if (!dev.tabs.length) out.push(el('div', { class: 'empty', 'data-device': dev.id + '-empty' }, '这台电脑现在没有开着的网页'));
+    if (dev.skipped) out.push(el('div', { class: 'empty', 'data-device': dev.id + '-more' }, `还有 ${dev.skipped} 个网页太多没同步过来`));
+  }
+  if (!devices.length) out.push(el('div', { class: 'empty' }, '在另一台电脑的 Chrome 里装上 Side Pocket，它开着的网页会出现在这里'));
+  patchChildren($('#devices'), out);
 }
 
 /* ---------- 搜索 ---------- */
 
-/** 节点所在位置，显示在搜索结果右侧 */
+/** 收藏所在位置，显示在搜索结果右侧 */
 function whereOf(id) {
   const names = [];
   let p = v.parent[id];
@@ -508,30 +537,34 @@ function whereOf(id) {
     p = v.parent[p];
   }
   if (p === M.PINNED) return '置顶';
-  if (p === M.TODAY) return '今日';
   return names.length ? names.join(' / ') : '收藏';
 }
 
 function renderResults() {
   const q = query.toLowerCase();
-  results = Object.values(state.nodes)
-    .filter((n) => n.type === 'link' && (n.title.toLowerCase().includes(q) || n.url.toLowerCase().includes(q)))
-    .sort((a, b) => {
-      // 标题命中优先，其次开着的优先
-      const at = a.title.toLowerCase().includes(q) ? 0 : 1;
-      const bt = b.title.toLowerCase().includes(q) ? 0 : 1;
-      return at - bt || (tabOfNode(a) ? 0 : 1) - (tabOfNode(b) ? 0 : 1);
-    })
-    .slice(0, 50);
+  const hit = (title, url) => (title || '').toLowerCase().includes(q) || (url || '').toLowerCase().includes(q);
+  const all = [];
+  for (const t of winTabs) if (hit(tabTitle(t), tabUrl(t))) all.push({ attr: { 'data-tab': String(t.id) }, url: tabUrl(t), title: tabTitle(t), where: '这个窗口', rank: 0 });
+  for (const n of Object.values(state.nodes)) {
+    if (n.type === 'link' && hit(n.title, n.url)) all.push({ attr: { 'data-id': n.id }, url: n.url, title: displayTitle(n), where: whereOf(n.id), rank: 1 });
+  }
+  for (const dev of devices) {
+    dev.tabs.forEach((t, i) => {
+      if (hit(t.title, t.url)) all.push({ attr: { 'data-remote': `${dev.id}|${i}` }, url: t.url, title: t.title || hostOf(t.url), where: dev.name, rank: 2 });
+    });
+  }
+  // 标题命中优先，其次本窗口 → 收藏 → 其他电脑
+  const tHit = (r) => (r.title.toLowerCase().includes(q) ? 0 : 1);
+  results = all.sort((a, b) => tHit(a) - tHit(b) || a.rank - b.rank).slice(0, 60);
   selected = Math.min(selected, Math.max(results.length - 1, 0));
   $('#result-count').textContent = results.length ? String(results.length) : '';
-  const rows = results.map((n, i) =>
+  const rows = results.map((r, i) =>
     el(
       'div',
-      { class: 'row link' + (v.parent[n.id] === M.TODAY ? todayCls(tabByNode.get(n.id)) : openCls(findTab(n.url), n.url)) + (i === selected ? ' selected' : ''), 'data-id': n.id, title: n.url },
-      favImg(n.url, 'fav'),
-      el('span', { class: 'title' }, displayTitle(n)),
-      el('span', { class: 'where' }, whereOf(n.id)),
+      { class: 'row link' + (r.rank === 0 ? '' : openCls(r.url)) + (i === selected ? ' selected' : ''), title: r.url, ...r.attr },
+      favImg(r.url, 'fav'),
+      el('span', { class: 'title' }, r.title),
+      el('span', { class: 'where' }, r.where),
     ),
   );
   if (!rows.length) rows.push(el('div', { class: 'empty' }, `没有找到「${query}」。试试网址里的关键词。`));
@@ -613,25 +646,12 @@ function nodeMenu(id) {
       { label: count ? `删除文件夹（含 ${count} 项）` : '删除文件夹', danger: true, run: () => op('remove', { id }) },
     ];
   }
-  const t = tabOfNode(n);
-  if (parent === M.TODAY) {
-    return [
-      { label: t ? '切换到该标签' : '打开', run: () => openNode(n) },
-      { label: '保存到收藏', run: () => op('move', { id, parent: M.ROOT }) },
-      { label: '置顶', run: () => op('pin', { id }) },
-      { label: '重命名', run: () => startRename(id) },
-      { label: '复制链接', run: () => copyText(n.url) },
-      '-',
-      { label: '关闭（所有设备）', danger: true, run: () => op('closeToday', { id }) },
-    ];
-  }
+  const t = findTab(n.url);
   const items = [
-    { label: t ? '切换到该标签' : '打开', run: () => openNode(n) },
+    { label: t ? '切换到该标签' : '打开', run: () => openUrl(n.url) },
     { label: '重命名', run: () => startRename(id) },
     { label: '复制链接', run: () => copyText(n.url) },
-    parent === M.PINNED
-      ? { label: '取消置顶', run: () => op('unpin', { id }) }
-      : { label: '置顶', run: () => op('pin', { id }) },
+    parent === M.PINNED ? { label: '取消置顶', run: () => op('unpin', { id }) } : { label: '置顶', run: () => op('pin', { id }) },
   ];
   if (parent !== M.PINNED) items.push({ label: '新建文件夹', run: () => newFolder(parent, after()) });
   if (t) items.push({ label: '关闭标签', run: () => chrome.tabs.remove(t.id) });
@@ -639,56 +659,132 @@ function nodeMenu(id) {
   return items;
 }
 
-async function clearToday() {
-  const openUrls = tabs.map((t) => t.url || t.pendingUrl || '');
-  const n = await op('clearToday', { openUrls });
-  showStatus(n ? `已清除 ${n} 个没打开的网页` : '没有需要清除的网页', 'info', 2500);
+function tabMenu(t) {
+  const url = tabUrl(t);
+  const items = [];
+  if (!t.active) items.push({ label: '切换到该标签', run: () => activateTab(t) });
+  if (/^(https?|file|ftp):/i.test(url)) {
+    items.push({ label: '收藏', run: () => saveUrl(url, t.title) }, { label: '置顶', run: () => saveUrl(url, t.title, M.PINNED) });
+  }
+  items.push({ label: '复制链接', run: () => copyText(url) }, '-', { label: '关闭标签', danger: true, run: () => chrome.tabs.remove(t.id) });
+  return items;
+}
+
+function remoteMenu(r) {
+  const open = localUrls.has(M.normUrl(r.url));
+  return [
+    { label: open ? '切换到该标签' : '在这台电脑打开', run: () => openUrl(r.url) },
+    { label: '收藏', run: () => saveUrl(r.url, r.title) },
+    { label: '置顶', run: () => saveUrl(r.url, r.title, M.PINNED) },
+    { label: '复制链接', run: () => copyText(r.url) },
+  ];
+}
+
+function deviceMenu(dev) {
+  return [
+    { heading: `${dev.name} · 最后更新 ${D.relTime(dev.at)}` },
+    {
+      label: '移除这台设备',
+      danger: true,
+      run: async () => {
+        await op('removeDevice', { id: dev.id });
+        showStatus(`已移除「${dev.name}」。如果它还在用，下次有变化时会重新出现。`, 'info', 4000);
+      },
+    },
+  ];
 }
 
 /* ---------- 交互事件 ---------- */
 
+/** 点到的是哪一行：{ kind: 'node' | 'tab' | 'remote' | 'device', row, ... } */
 function targetOf(e) {
-  const row = e.target.closest('[data-id]');
-  if (!row || !state.nodes[row.dataset.id]) return {};
-  return { row, node: state.nodes[row.dataset.id] };
+  const row = e.target.closest?.('[data-id], [data-tab], [data-remote], [data-device]');
+  if (!row) return {};
+  if (row.dataset.id != null) {
+    const node = state.nodes[row.dataset.id];
+    return node ? { kind: 'node', row, node } : {};
+  }
+  if (row.dataset.tab != null) {
+    const tab = tabs.find((t) => String(t.id) === row.dataset.tab);
+    return tab ? { kind: 'tab', row, tab } : {};
+  }
+  if (row.dataset.remote != null) {
+    const [id, i] = row.dataset.remote.split('|');
+    const r = devices.find((d) => d.id === id)?.tabs[Number(i)];
+    return r ? { kind: 'remote', row, remote: r } : {};
+  }
+  const dev = devices.find((d) => d.id === row.dataset.device);
+  return dev ? { kind: 'device', row, dev } : {};
+}
+
+function toggleDevice(id) {
+  devCollapsed = { ...devCollapsed, [id]: !devCollapsed[id] };
+  if (!devCollapsed[id]) delete devCollapsed[id];
+  chrome.storage.local.set({ [DEV_COLLAPSE_KEY]: devCollapsed });
+  render();
 }
 
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#menu')) hideMenu();
-  if (e.target.closest('input.rename')) return;
+  if (e.target.closest('input.rename, #settings-pop')) return;
   if (e.target.closest('#new-folder')) return newFolder();
-  if (e.target.closest('#clear-today')) return clearToday();
   if (e.target.closest('#new-tab')) return chrome.tabs.create({ windowId: winId ?? undefined });
   if (e.target.closest('#toggle-collapse')) return closeSidePanel();
-  const { row, node } = targetOf(e);
-  if (!node) return;
+  const t = targetOf(e);
+  if (!t.kind) return;
   const act = e.target.closest('[data-act]')?.dataset.act;
-  if (act === 'menu') {
+  const menuAt = (items) => {
     const r = e.target.getBoundingClientRect();
-    return showMenu(r.left, r.bottom + 2, nodeMenu(node.id), row);
+    showMenu(r.left, r.bottom + 2, items, t.row);
+  };
+  if (t.kind === 'device') return act === 'device-menu' ? menuAt(deviceMenu(t.dev)) : toggleDevice(t.dev.id);
+  if (t.kind === 'tab') {
+    const url = tabUrl(t.tab);
+    if (act === 'save') return saveUrl(url, t.tab.title);
+    if (act === 'pin') return saveUrl(url, t.tab.title, M.PINNED);
+    if (act === 'close') return chrome.tabs.remove(t.tab.id);
+    return activateTab(t.tab);
   }
-  if (act === 'save') return op('move', { id: node.id, parent: M.ROOT });
-  if (act === 'pin') return op('pin', { id: node.id });
-  if (act === 'close') return op('closeToday', { id: node.id });
+  if (t.kind === 'remote') {
+    if (act === 'save') return saveUrl(t.remote.url, t.remote.title);
+    if (act === 'pin') return saveUrl(t.remote.url, t.remote.title, M.PINNED);
+    return openUrl(t.remote.url);
+  }
+  const node = t.node;
+  if (act === 'menu') return menuAt(nodeMenu(node.id));
   if (act === 'close-tab') {
-    const t = tabOfNode(node);
-    if (t) chrome.tabs.remove(t.id);
+    const x = findTab(node.url);
+    if (x) chrome.tabs.remove(x.id);
     return;
   }
   if (node.type === 'folder') return op('setCollapsed', { id: node.id, collapsed: !node.collapsed });
-  return openNode(node);
+  return openUrl(node.url);
 });
 
 document.addEventListener('contextmenu', (e) => {
   if (e.target.closest('input')) return;
   e.preventDefault();
-  const { row, node } = targetOf(e);
-  if (node) showMenu(e.clientX, e.clientY, nodeMenu(node.id), row);
+  const t = targetOf(e);
+  const at = (items) => showMenu(e.clientX, e.clientY, items, t.row);
+  if (t.kind === 'node') at(nodeMenu(t.node.id));
+  else if (t.kind === 'tab') at(tabMenu(t.tab));
+  else if (t.kind === 'remote') at(remoteMenu(t.remote));
+  else if (t.kind === 'device') at(deviceMenu(t.dev));
   else if (e.target.closest('#saved-section')) showMenu(e.clientX, e.clientY, [{ label: '新建文件夹', run: () => newFolder() }]);
   else hideMenu();
 });
 
 document.addEventListener('keydown', (e) => e.key === 'Escape' && hideMenu());
+
+/** 搜索结果里按回车 */
+function openResult(r) {
+  const tid = r.attr['data-tab'];
+  if (tid != null) {
+    const t = tabs.find((x) => String(x.id) === tid);
+    if (t) return activateTab(t);
+  }
+  return openUrl(r.url);
+}
 
 const searchInput = $('#search');
 searchInput.addEventListener('input', () => setQuery(searchInput.value));
@@ -709,19 +805,19 @@ searchInput.addEventListener('keydown', (e) => {
     document.querySelector('#results .row.selected')?.scrollIntoView({ block: 'nearest' });
   } else if (e.key === 'Enter') {
     e.preventDefault();
-    openNode(results[selected]);
+    openResult(results[selected]);
   }
 });
 window.addEventListener('blur', hideMenu);
 
 /* ---------- 拖拽 ---------- */
+// 收藏 ↔ 收藏：移动书签；标签 / 其他电脑的网页 → 收藏、置顶：新建书签（标签照常开着）；
+// 这个窗口里上下拖：移动真实标签；收藏 / 其他电脑的网页 → 这个窗口：在那个位置打开。
 
 const dropLine = () => $('#drop-line');
 
 function clearDropMarks() {
-  document
-    .querySelectorAll('.drop-before, .drop-after, .drop-into, .drop-zone')
-    .forEach((x) => x.classList.remove('drop-before', 'drop-after', 'drop-into', 'drop-zone'));
+  document.querySelectorAll('.drop-before, .drop-after, .drop-into, .drop-zone').forEach((x) => x.classList.remove('drop-before', 'drop-after', 'drop-into', 'drop-zone'));
   const line = dropLine();
   if (line) line.hidden = true;
 }
@@ -740,76 +836,82 @@ function showInsertLine(target, after, horizontal = false) {
   }
 }
 
-/** 返回 { parent, index, el, cls, after?, horizontal?, tabMove? } 或 null。index 是移动前目标列表里的下标 */
+/** 正在拖的东西是网址（标签、其他电脑的网页、收藏里的链接）时返回 { url, title } */
+function dragLink() {
+  if (!drag) return null;
+  if (drag.kind === 'remote') return { url: drag.url, title: drag.title };
+  if (drag.kind === 'tab') {
+    const t = tabs.find((x) => x.id === drag.tabId);
+    return t ? { url: tabUrl(t), title: t.title } : null;
+  }
+  const n = state.nodes[drag.id];
+  return n?.type === 'link' ? { url: n.url, title: n.title } : null;
+}
+
+/**
+ * 返回放下的位置或 null：
+ *   { zone: 'window', index: Chrome 标签下标（null = 末尾）, el, cls, after? }
+ *   { zone: 'saved', parent, index: 移动前目标列表里的下标, el, cls, after?, horizontal? }
+ */
 function dropTarget(e) {
   if (!drag) return null;
-  const dragNode = state.nodes[drag.id];
-  if (!dragNode) return null;
   const under = document.elementFromPoint(e.clientX, e.clientY) || e.target;
-  if (!under || under.closest?.('#menu, #drop-line, .side-footer, #status')) return null;
-  const isFolder = dragNode.type === 'folder';
+  if (!under || under.closest?.('#menu, #drop-line, .side-footer, #status, #devices-section')) return null;
+  const link = dragLink();
+  const dragNode = drag.kind === 'node' ? state.nodes[drag.id] : null;
+  const isFolder = dragNode?.type === 'folder';
 
-  // 今日区：只接收链接；今日内上下排序，并在同一窗口里联动移动真实标签
-  if (under.closest('#tabs-section')) {
-    if (isFolder) return null;
-    const row = under.closest('#tabs-section .row.tab[data-id]');
-    if (!row) return { parent: M.TODAY, index: null, el: $('#tabs'), cls: 'drop-zone' };
-    const targetId = row.dataset.id;
-    if (targetId === drag.id) return null;
-    const idx = v.order[M.TODAY].indexOf(targetId);
-    if (idx === -1) return null;
+  // 这个窗口
+  if (under.closest('#window-section')) {
+    if (!link) return null;
+    if (drag.kind === 'tab' && !tabs.find((t) => t.id === drag.tabId && t.windowId === winId)) return null;
+    const row = under.closest('#tabs .row.tab[data-tab]');
+    if (!row) return { zone: 'window', index: null, el: $('#tabs'), cls: 'drop-zone' };
+    const target = winTabs.find((t) => String(t.id) === row.dataset.tab);
+    if (!target || (drag.kind === 'tab' && target.id === drag.tabId)) return null;
     const r = row.getBoundingClientRect();
     const after = (e.clientY - r.top) / Math.max(r.height, 1) >= 0.5;
-    const dragTab = tabOfNode(dragNode);
-    const targetTab = tabOfNode(state.nodes[targetId]);
-    let tabMove = null;
-    if (dragTab && targetTab && dragTab.windowId === targetTab.windowId) {
-      let index = after ? targetTab.index + 1 : targetTab.index;
-      if (dragTab.index < index) index -= 1; // tabs.move 的 index 是移动后的位置
-      tabMove = { tabId: dragTab.id, windowId: targetTab.windowId, index };
-    }
-    return { parent: M.TODAY, index: idx + (after ? 1 : 0), el: row, cls: after ? 'drop-after' : 'drop-before', after, tabMove };
+    return { zone: 'window', index: target.index + (after ? 1 : 0), el: row, cls: after ? 'drop-after' : 'drop-before', after };
   }
 
+  if (drag.kind !== 'node' && !link) return null;
   const valid = (parent) => !(isFolder && (parent === M.PINNED || M.isInside(v, parent, drag.id)));
+  const self = (id) => drag.kind === 'node' && id === drag.id;
 
   // 文件夹的空白处 / 子容器 → 放进文件夹
   const well = under.closest('.folder-well[data-folder]');
   if (well && !under.closest('.row[data-id], .tile[data-id]')) {
     const id = well.dataset.folder;
-    if (id === drag.id) return null;
-    return valid(id) ? { parent: id, index: null, el: well, cls: 'drop-into' } : null;
+    if (self(id)) return null;
+    return valid(id) ? { zone: 'saved', parent: id, index: null, el: well, cls: 'drop-into' } : null;
   }
 
   const row = under.closest('#saved .row[data-id], #pinned .tile[data-id]');
   if (row) {
     const id = row.dataset.id;
     const n = state.nodes[id];
-    if (id === drag.id || !n) return null;
+    if (self(id) || !n) return null;
     const r = row.getBoundingClientRect();
     const parent = v.parent[id];
     const idx = v.order[parent].indexOf(id);
     if (row.classList.contains('tile')) {
+      if (isFolder) return null;
       const after = e.clientX > r.left + r.width / 2;
-      return valid(parent)
-        ? { parent, index: idx + (after ? 1 : 0), el: row, cls: after ? 'drop-after' : 'drop-before', after, horizontal: true }
-        : null;
+      return { zone: 'saved', parent, index: idx + (after ? 1 : 0), el: row, cls: after ? 'drop-after' : 'drop-before', after, horizontal: true };
     }
     const ratio = (e.clientY - r.top) / Math.max(r.height, 1);
     // 文件夹中段：放进去；上下沿：同级重排
     if (n.type === 'folder' && ratio > 0.28 && ratio < 0.72) {
-      return valid(id) ? { parent: id, index: null, el: row, cls: 'drop-into' } : null;
+      return valid(id) ? { zone: 'saved', parent: id, index: null, el: row, cls: 'drop-into' } : null;
     }
     const after = ratio >= 0.5;
-    return valid(parent)
-      ? { parent, index: idx + (after ? 1 : 0), el: row, cls: after ? 'drop-after' : 'drop-before', after }
-      : null;
+    return valid(parent) ? { zone: 'saved', parent, index: idx + (after ? 1 : 0), el: row, cls: after ? 'drop-after' : 'drop-before', after } : null;
   }
 
   if (under.closest('#pinned-section')) {
-    return valid(M.PINNED) ? { parent: M.PINNED, index: null, el: $('#pinned'), cls: 'drop-zone' } : null;
+    return valid(M.PINNED) ? { zone: 'saved', parent: M.PINNED, index: null, el: $('#pinned'), cls: 'drop-zone' } : null;
   }
-  if (under.closest('#saved-section')) return { parent: M.ROOT, index: null, el: $('#saved'), cls: 'drop-zone' };
+  if (under.closest('#saved-section')) return { zone: 'saved', parent: M.ROOT, index: null, el: $('#saved'), cls: 'drop-zone' };
   return null;
 }
 
@@ -825,11 +927,22 @@ document.addEventListener('dragstart', (e) => {
     e.preventDefault(); // 操作按钮不启动拖拽
     return;
   }
-  const { row, node } = targetOf(e);
-  if (!node || renaming) return e.preventDefault();
-  drag = { id: node.id };
-  e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', node.url || node.title || 'move');
+  const t = targetOf(e);
+  if (!t.kind || t.kind === 'device' || renaming) return e.preventDefault();
+  let text = '';
+  if (t.kind === 'node') {
+    drag = { kind: 'node', id: t.node.id };
+    text = t.node.url || t.node.title;
+  } else if (t.kind === 'tab') {
+    drag = { kind: 'tab', tabId: t.tab.id };
+    text = tabUrl(t.tab);
+  } else {
+    drag = { kind: 'remote', url: t.remote.url, title: t.remote.title };
+    text = t.remote.url;
+  }
+  e.dataTransfer.effectAllowed = 'copyMove';
+  e.dataTransfer.setData('text/plain', text || 'move');
+  const row = t.row;
   const ghost = row.cloneNode(true);
   Object.assign(ghost.style, { width: row.offsetWidth + 'px', position: 'absolute', top: '-9999px', opacity: '0.9' });
   document.body.appendChild(ghost);
@@ -844,7 +957,7 @@ document.addEventListener('dragover', (e) => {
   const t = dropTarget(e);
   if (!t) return clearDropMarks();
   e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
+  e.dataTransfer.dropEffect = drag.kind === 'node' && t.zone === 'saved' ? 'move' : 'copy';
   markDrop(t);
 });
 
@@ -853,16 +966,25 @@ document.addEventListener('drop', async (e) => {
   clearDropMarks();
   if (!t || !drag) return;
   e.preventDefault();
-  const id = drag.id;
+  const d = drag;
+  const link = dragLink();
   drag = null;
   document.body.classList.remove('is-dragging');
-  op('move', { id, parent: t.parent, index: t.index });
-  if (t.tabMove) {
-    try {
-      await chrome.tabs.move(t.tabMove.tabId, { index: t.tabMove.index, windowId: t.tabMove.windowId });
-    } catch (err) {
-      console.warn('[side-pocket] tabs.move 失败', err);
+  try {
+    if (t.zone === 'saved') {
+      if (d.kind === 'node') op('move', { id: d.id, parent: t.parent, index: t.index });
+      else saveUrl(link.url, link.title, t.parent, t.index);
+    } else if (d.kind === 'tab') {
+      const cur = winTabs.find((x) => x.id === d.tabId);
+      let index = t.index ?? -1;
+      if (index >= 0 && cur && cur.index < index) index -= 1; // tabs.move 的 index 是移动后的位置
+      await chrome.tabs.move(d.tabId, { index, windowId: winId });
+    } else {
+      await chrome.tabs.create({ url: link.url, windowId: winId ?? undefined, index: t.index ?? undefined, active: true });
     }
+  } catch (err) {
+    console.warn('[side-pocket] 拖拽操作失败', err);
+    showStatus('操作失败：' + (err?.message || err), 'warn', 3000);
   }
 });
 
@@ -879,36 +1001,45 @@ for (const ev of ['onCreated', 'onRemoved', 'onUpdated', 'onActivated', 'onMoved
   chrome.tabs[ev].addListener(() => refreshSoon());
 }
 
-// 书签变了（包括在 Chrome 书签管理器里改的、从别的电脑同步来的）、文件夹颜色 / 折叠变了：重新读取
+// 书签变了（包括在 Chrome 书签管理器里改的、从别的电脑同步来的）
 for (const ev of ['onCreated', 'onRemoved', 'onChanged', 'onMoved', 'onChildrenReordered', 'onImportEnded']) {
   chrome.bookmarks[ev]?.addListener(() => refreshSoon());
 }
+
 chrome.storage.onChanged.addListener((changes, area) => {
-  if ((area === 'sync' && changes[B.COLOR_KEY]) || (area === 'local' && changes[B.COLLAPSE_KEY])) refreshSoon();
+  const keys = Object.keys(changes);
+  if (area === 'sync' && keys.some((k) => k === B.COLOR_KEY || k.startsWith(D.META) || k.startsWith(D.CHUNK))) refreshSoon(150);
+  if (area === 'local' && changes[B.COLLAPSE_KEY]) refreshSoon();
 });
 
 chrome.storage.session.onChanged.addListener((changes) => {
-  if (changes[BIND_KEY]) refreshSoon(30); // 标签和今日条目的对应关系变了
-  const c = changes[VIEW_KEY];
-  if (!c) return;
-  showSync(c.newValue?.status);
-  refreshSoon(30);
+  if (changes[D.VIEW_KEY]) showSync(changes[D.VIEW_KEY].newValue?.status);
 });
 
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && stale) refresh();
 });
 
+// 「3 分钟前」这类时间每分钟更新一次
+setInterval(() => {
+  if (!document.hidden && !query && devices.length && !drag) renderDevices();
+}, 60e3);
+
 /* ---------- 设置 ---------- */
 
-/** 设置里显示当前快捷键；没设置（比如被别的扩展占了）时明确提示 */
+/** 设置里显示当前快捷键和这台电脑的名字 */
 async function refreshSettingsUi() {
-  const cmds = await chrome.commands.getAll().catch(() => []);
+  const [cmds, info] = await Promise.all([
+    chrome.commands.getAll().catch(() => []),
+    chrome.runtime.sendMessage({ type: 'side-pocket:info' }).catch(() => null),
+  ]);
   const key = cmds.find((c) => c.name === '_execute_action')?.shortcut || '';
-  const el = $('#shortcut-key');
-  el.textContent = key || '未设置';
-  el.classList.toggle('warn', !key);
+  const k = $('#shortcut-key');
+  k.textContent = key || '未设置';
+  k.classList.toggle('warn', !key);
   $('#shortcut-hint').hidden = !!key;
+  const input = $('#device-name');
+  if (document.activeElement !== input && info?.ok) input.value = info.result.name;
 }
 
 /** 关闭 Chrome 侧边栏（Chrome 标题栏上的 ✕、再按一次快捷键也可以） */
@@ -938,19 +1069,35 @@ function setupChromeUi() {
     setPop(false);
     chrome.tabs.create({ url: 'chrome://extensions/shortcuts', windowId: winId ?? undefined });
   });
+
+  const nameInput = $('#device-name');
+  let lastName = null;
+  const saveName = async () => {
+    const name = nameInput.value.trim();
+    if (name === lastName) return;
+    lastName = name;
+    const r = await chrome.runtime.sendMessage({ type: 'side-pocket:op', op: 'setDeviceName', args: { name } }).catch(() => null);
+    if (r?.ok) {
+      nameInput.value = r.result;
+      lastName = r.result;
+      showStatus(`这台电脑叫「${r.result}」，其他电脑上会这样显示`, 'info', 2500);
+    }
+  };
+  nameInput.addEventListener('focus', () => (lastName = nameInput.value.trim()));
+  nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') nameInput.blur();
+    e.stopPropagation();
+  });
+  nameInput.addEventListener('blur', saveName);
+
   // 从设置页改完回来，侧栏重新拿到焦点时更新显示
   window.addEventListener('focus', () => !pop.hidden && refreshSettingsUi());
 }
 
 async function init() {
   setupChromeUi();
-  const [s, has] = await Promise.all([chrome.storage.session.get(VIEW_KEY), chrome.storage.local.get(LOCAL_KEY)]);
-  showSync(s[VIEW_KEY]?.status);
-  if (!has[LOCAL_KEY]) {
-    // 新版本第一次运行：等后台完成迁移 / 首次对账
-    await chrome.runtime.sendMessage({ type: 'side-pocket:sync' }).catch((e) => console.warn('[side-pocket]', e));
-  }
-  // 在后台打开的网页也先画一次，切过来时直接有内容，不会先空白再出现
+  const s = await chrome.storage.session.get(D.VIEW_KEY);
+  showSync(s[D.VIEW_KEY]?.status);
   await refresh({ force: true });
 }
 
