@@ -2,11 +2,13 @@
 //   置顶、收藏   Chrome 书签（bookmarks.js）；修改发给后台
 //   这个窗口     直接读 chrome.tabs，和 Chrome 标签栏一模一样（包括顺序、新标签页、设置页），不加工
 //   其他电脑     读 chrome.storage.sync 里别的电脑上传的清单（devices.js），只读
-// 「开着」的标记：收藏 / 其他电脑的网页，网址在本机任意窗口里开着就算。
+// 置顶 / 收藏和标签的对应关系见 claims.js：只看这个窗口，每个最多认领一个标签，认领后跟着标签走。
+// 其他电脑的网页：网址在这个窗口里开着，就标「已开着」。
 
 import * as M from './model.js';
 import * as B from './bookmarks.js';
 import * as D from './devices.js';
+import * as C from './claims.js';
 
 const $ = (sel) => document.querySelector(sel);
 const SELF_PREFIX = chrome.runtime.getURL('');
@@ -17,8 +19,9 @@ let v = M.view(state);
 let tabs = []; // 所有窗口的标签（不含侧栏自己）
 let winTabs = []; // 这个窗口的标签，按标签栏顺序
 let winId = null; // 侧栏所在窗口
-let activeUrl = ''; // 这个窗口当前标签的网址，用来高亮收藏
-let localUrls = new Set(); // 本机开着的网址
+let winUrls = new Set(); // 这个窗口开着的网址
+let claimsRaw = {}; // 这个窗口的认领记录 { 节点 id: 标签 id }
+let idx = C.buildIndex([], []); // 置顶 / 收藏 ↔ 这个窗口的标签
 let devices = []; // 其他电脑
 let selfId = '';
 let devCollapsed = {};
@@ -92,15 +95,27 @@ const tabUrl = (t) => t.url || t.pendingUrl || '';
 const tabTitle = (t) => t.title || (tabUrl(t).startsWith('chrome://newtab') ? '新标签页' : tabUrl(t)) || '新标签页';
 const isSelf = (t) => tabUrl(t).startsWith(SELF_PREFIX);
 
-/** 找到该网址已打开的标签：优先这个窗口 */
-function findTab(url) {
-  const u = M.normUrl(url);
-  const hits = tabs.filter((t) => M.normUrl(tabUrl(t)) === u);
-  return hits.find((t) => t.windowId === winId) || hits[0] || null;
+/** 置顶 / 收藏对应的标签：{ tab, own } 或 null（own=false 表示点了会认领这个已开着的标签） */
+const savedTab = (n) => (n?.type === 'link' ? idx.tabFor(n.id) : null);
+
+/** 置顶 / 收藏：开着 = 点它会切到一个已开着的标签；高亮 = 那个标签就是当前标签 */
+function openCls(n) {
+  const r = savedTab(n);
+  return (r ? ' open' : '') + (r?.tab.active ? ' active' : '');
 }
 
-/** 收藏 / 置顶：开着 = 本机有标签开着这个网址；高亮 = 就是这个窗口的当前标签 */
-const openCls = (url) => (localUrls.has(M.normUrl(url)) ? ' open' : '') + (activeUrl && M.normUrl(url) === activeUrl ? ' active' : '');
+/** 认领的标签已经跳到别的网址时，提示「现在：xxx」 */
+function savedTip(n) {
+  const r = savedTab(n);
+  if (r?.own && M.normUrl(tabUrl(r.tab)) !== M.normUrl(n.url)) return `${n.url}\n现在：${tabTitle(r.tab)}`;
+  return n.url;
+}
+
+/** 这个窗口里开着这个网址的标签（其他电脑的网页用） */
+function findWinTab(url) {
+  const u = M.normUrl(url);
+  return winTabs.find((t) => t.active && M.normUrl(tabUrl(t)) === u) || winTabs.find((t) => M.normUrl(tabUrl(t)) === u) || null;
+}
 
 async function copyText(text) {
   try {
@@ -188,9 +203,9 @@ async function refresh({ force = false } = {}) {
   winId = wid;
   tabs = all.filter((t) => !isSelf(t));
   winTabs = tabs.filter((t) => t.windowId === winId).sort((a, b) => a.index - b.index);
-  localUrls = new Set(tabs.filter((t) => !t.incognito).map((t) => M.normUrl(tabUrl(t))));
-  const act = winTabs.find((t) => t.active);
-  activeUrl = act ? M.normUrl(tabUrl(act)) : '';
+  winUrls = new Set(winTabs.map((t) => M.normUrl(tabUrl(t))));
+  claimsRaw = (await chrome.storage.session.get(C.keyOf(winId)))[C.keyOf(winId)] || {};
+  buildIdx();
   render();
 }
 
@@ -223,16 +238,52 @@ async function op(name, args = {}) {
   }
 }
 
-/** 打开网址：本机已经开着就切过去，否则在这个窗口新开 */
+function buildIdx() {
+  const links = Object.values(state.nodes).filter((n) => n.type === 'link');
+  idx = C.buildIndex(links, winTabs, claimsRaw);
+}
+
+/** 记下「这个标签归这个置顶 / 收藏」 */
+async function claimTab(nid, tid) {
+  const key = C.keyOf(winId);
+  const cur = (await chrome.storage.session.get(key))[key] || {};
+  claimsRaw = C.claim(cur, nid, tid);
+  await chrome.storage.session.set({ [key]: claimsRaw });
+}
+
+/**
+ * 点置顶 / 收藏：有自己的标签 → 切过去；没有 → 认领这个窗口里匹配的已开标签；都没有 → 在这个窗口新开并认领。
+ * 已经在它的标签上时不动（想回到原网址用右键菜单）。
+ */
+async function openSaved(n) {
+  const r = savedTab(n);
+  if (r) {
+    if (!r.own) await claimTab(n.id, r.tab.id);
+    if (!r.tab.active) await activateTab(r.tab);
+    else refreshSoon();
+    return;
+  }
+  const t = await chrome.tabs.create({ url: n.url, windowId: winId ?? undefined, active: true });
+  await claimTab(n.id, t.id);
+}
+
+/** 右键「回到原网址」：让它的标签重新打开置顶 / 收藏的网址 */
+async function backToOrigin(n) {
+  const r = savedTab(n);
+  if (!r) return openSaved(n);
+  if (!r.own) await claimTab(n.id, r.tab.id);
+  await chrome.tabs.update(r.tab.id, { url: n.url, active: true });
+}
+
+/** 打开网址（其他电脑的网页）：这个窗口已经开着就切过去，否则在这个窗口新开 */
 async function openUrl(url) {
-  const t = findTab(url);
+  const t = findWinTab(url);
   if (t) return activateTab(t);
   await chrome.tabs.create({ url, windowId: winId ?? undefined });
 }
 
 async function activateTab(t) {
   await chrome.tabs.update(t.id, { active: true });
-  if (t.windowId !== winId) await chrome.windows.update(t.windowId, { focused: true });
 }
 
 /** 把一个网页存进收藏 / 置顶（已收藏过的网址会挪过去，不重复建） */
@@ -262,6 +313,7 @@ function startRename(id) {
 
 function render() {
   v = M.view(state);
+  buildIdx();
   const old = document.querySelector('input.rename');
   const draft = old && old.dataset.id === renaming ? { value: old.value, start: old.selectionStart, end: old.selectionEnd } : null;
   rendering = true;
@@ -358,7 +410,7 @@ function renderPinned() {
       const n = state.nodes[id];
       return el(
         'div',
-        { class: 'tile' + openCls(n.url), title: displayTitle(n), draggable: 'true', 'data-id': id, role: 'button', tabindex: '0' },
+        { class: 'tile' + openCls(n), title: savedTip(n) === n.url ? displayTitle(n) : `${displayTitle(n)}\n现在：${tabTitle(savedTab(n).tab)}`, draggable: 'true', 'data-id': id, role: 'button', tabindex: '0' },
         favImg(n.url, '', 64),
       );
     }),
@@ -377,7 +429,7 @@ function folderStats(id) {
       open += s.open;
     } else {
       total++;
-      if (localUrls.has(M.normUrl(n.url))) open++;
+      if (savedTab(n)) open++;
     }
   }
   return { total, open };
@@ -426,10 +478,10 @@ function titleNode(n) {
 }
 
 function linkRow(n) {
-  const open = localUrls.has(M.normUrl(n.url));
+  const open = !!savedTab(n);
   return el(
     'div',
-    { class: 'row link' + openCls(n.url), draggable: 'true', 'data-id': n.id, title: n.url },
+    { class: 'row link' + openCls(n), draggable: 'true', 'data-id': n.id, title: savedTip(n) },
     favImg(n.url, 'fav'),
     titleNode(n),
     el(
@@ -468,10 +520,17 @@ function folderRow(n) {
 function tabRow(t) {
   const url = tabUrl(t);
   const web = /^(https?|file|ftp):/i.test(url);
+  const owner = state.nodes[idx.ownerOf(t.id)];
   return el(
     'div',
-    { class: 'row tab open' + (t.active ? ' active' : '') + (t.pinned ? ' chrome-pinned' : ''), draggable: 'true', 'data-tab': String(t.id), title: url },
+    {
+      class: 'row tab open' + (t.active ? ' active' : '') + (t.pinned ? ' chrome-pinned' : '') + (owner ? ' claimed' : ''),
+      draggable: 'true',
+      'data-tab': String(t.id),
+      title: owner ? `${url}\n属于${v.parent[owner.id] === M.PINNED ? '置顶' : '收藏'}「${displayTitle(owner)}」` : url,
+    },
     favImg(url, 'fav'),
+    owner ? svgIcon(SVG.pin, 'claim-ico') : null,
     el('span', { class: 'title' }, tabTitle(t)),
     el(
       'span',
@@ -490,7 +549,7 @@ function renderWindow() {
 
 function remoteRow(dev, i) {
   const t = dev.tabs[i];
-  const open = localUrls.has(M.normUrl(t.url));
+  const open = winUrls.has(M.normUrl(t.url));
   return el(
     'div',
     { class: 'row remote' + (open ? ' local-open' : ''), draggable: 'true', 'data-remote': `${dev.id}|${i}`, title: t.url },
@@ -561,7 +620,7 @@ function renderResults() {
   const rows = results.map((r, i) =>
     el(
       'div',
-      { class: 'row link' + (r.rank === 0 ? '' : openCls(r.url)) + (i === selected ? ' selected' : ''), title: r.url, ...r.attr },
+      { class: 'row link' + (r.rank === 1 ? openCls(state.nodes[r.attr['data-id']]) : r.rank === 2 && winUrls.has(M.normUrl(r.url)) ? ' open' : '') + (i === selected ? ' selected' : ''), title: r.url, ...r.attr },
       favImg(r.url, 'fav'),
       el('span', { class: 'title' }, r.title),
       el('span', { class: 'where' }, r.where),
@@ -646,17 +705,19 @@ function nodeMenu(id) {
       { label: count ? `删除文件夹（含 ${count} 项）` : '删除文件夹', danger: true, run: () => op('remove', { id }) },
     ];
   }
-  const t = findTab(n.url);
+  const r = savedTab(n);
+  const moved = r?.own && M.normUrl(tabUrl(r.tab)) !== M.normUrl(n.url);
   const items = [
-    { label: t ? '切换到该标签' : '打开', run: () => openUrl(n.url) },
+    { label: r ? '切换到该标签' : '打开', run: () => openSaved(n) },
     { label: '重命名', run: () => startRename(id) },
+    moved ? { label: '回到原网址', run: () => backToOrigin(n) } : null,
     { label: '复制链接', run: () => copyText(n.url) },
     parent === M.PINNED ? { label: '取消置顶', run: () => op('unpin', { id }) } : { label: '置顶', run: () => op('pin', { id }) },
   ];
   if (parent !== M.PINNED) items.push({ label: '新建文件夹', run: () => newFolder(parent, after()) });
-  if (t) items.push({ label: '关闭标签', run: () => chrome.tabs.remove(t.id) });
+  if (r) items.push({ label: '关闭标签', run: () => chrome.tabs.remove(r.tab.id) });
   items.push('-', { label: '删除', danger: true, run: () => op('remove', { id }) });
-  return items;
+  return items.filter(Boolean);
 }
 
 function tabMenu(t) {
@@ -671,7 +732,7 @@ function tabMenu(t) {
 }
 
 function remoteMenu(r) {
-  const open = localUrls.has(M.normUrl(r.url));
+  const open = winUrls.has(M.normUrl(r.url));
   return [
     { label: open ? '切换到该标签' : '在这台电脑打开', run: () => openUrl(r.url) },
     { label: '收藏', run: () => saveUrl(r.url, r.title) },
@@ -753,12 +814,12 @@ document.addEventListener('click', (e) => {
   const node = t.node;
   if (act === 'menu') return menuAt(nodeMenu(node.id));
   if (act === 'close-tab') {
-    const x = findTab(node.url);
-    if (x) chrome.tabs.remove(x.id);
+    const x = savedTab(node);
+    if (x) chrome.tabs.remove(x.tab.id);
     return;
   }
   if (node.type === 'folder') return op('setCollapsed', { id: node.id, collapsed: !node.collapsed });
-  return openUrl(node.url);
+  return openSaved(node);
 });
 
 document.addEventListener('contextmenu', (e) => {
@@ -783,6 +844,8 @@ function openResult(r) {
     const t = tabs.find((x) => String(x.id) === tid);
     if (t) return activateTab(t);
   }
+  const nid = r.attr['data-id'];
+  if (nid != null && state.nodes[nid]) return openSaved(state.nodes[nid]);
   return openUrl(r.url);
 }
 
@@ -1013,6 +1076,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 chrome.storage.session.onChanged.addListener((changes) => {
+  if (winId != null && changes[C.keyOf(winId)]) refreshSoon(30);
   if (changes[D.VIEW_KEY]) showSync(changes[D.VIEW_KEY].newValue?.status);
 });
 

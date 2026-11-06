@@ -20,10 +20,11 @@ let ctx = await launch();
 let [sw] = ctx.serviceWorkers();
 if (!sw) sw = await ctx.waitForEvent('serviceworker');
 const extId = new URL(sw.url()).host;
-const route = (c) =>
-  c.route('http://site.test/**', (r) =>
-    r.fulfill({ contentType: 'text/html', body: `<!doctype html><meta charset=utf-8><title>${new URL(r.request().url()).pathname.slice(1)}</title><p>正文</p>` }),
-  );
+const page = (r) => r.fulfill({ contentType: 'text/html', body: `<!doctype html><meta charset=utf-8><title>${new URL(r.request().url()).pathname.slice(1)}</title><p>正文</p>` });
+const route = async (c) => {
+  await c.route('http://site.test/**', page);
+  await c.route('http://other.test/**', page);
+};
 await route(ctx);
 
 let pass = 0, fail = 0;
@@ -188,6 +189,63 @@ list = await bmList();
 const colors = await sw.evaluate(async () => (await chrome.storage.sync.get('ui.folderColors'))['ui.folderColors']);
 check('新建文件夹：建在书签里，颜色另外记下', list.includes('工作/') && colors?.['工作'] === 'green', JSON.stringify([list, colors]));
 
+console.log('点置顶：一个置顶在这个窗口只对应一个标签');
+await sendOp('saveTab', { url: 'http://site.test/pinA', title: 'PinA', parent: 'pinned' });
+await sleep(800);
+const tile = panel.locator('#pinned .tile[title^="PinA"]');
+const winInfo = () => sw.evaluate(async (w) => {
+  const ts = (await chrome.tabs.query({ windowId: w })).filter((t) => !(t.url || '').includes('/sidepanel.html'));
+  return { n: ts.length, active: ts.find((t) => t.active)?.id, ids: ts.map((t) => t.id), urls: Object.fromEntries(ts.map((t) => [t.id, t.url || t.pendingUrl])) };
+}, panelWin);
+const clickTile = async () => { await panel.bringToFront(); await sleep(500); await tile.click(); await sleep(1200); };
+let w0 = await winInfo();
+await clickTile();
+let w1 = await winInfo();
+const a1 = w1.ids.find((id) => !w0.ids.includes(id));
+check('第一次点：在这个窗口新开 A1', w1.n === w0.n + 1 && a1 && w1.active === a1, JSON.stringify([w0, w1]));
+await sw.evaluate((id) => chrome.tabs.update(id, { url: 'http://other.test/elsewhere' }), a1);
+await sleep(1200);
+await panel.bringToFront(); await sleep(600);
+check('A1 跳到别的网站：置顶 A 还亮着', (await tile.getAttribute('class')).includes('open'), await tile.getAttribute('class'));
+check('悬停提示「现在：…」', (await tile.getAttribute('title')).includes('现在：'), await tile.getAttribute('title'));
+check('这个窗口里 A1 前面有小图钉', (await panel.locator(`#tabs .row.tab[data-tab="${a1}"] .claim-ico`).count()) === 1);
+const a2 = await sw.evaluate(async (w) => (await chrome.tabs.create({ windowId: w, url: 'http://site.test/pinA', active: false })).id, panelWin);
+await sleep(800);
+w0 = await winInfo();
+await clickTile();
+w1 = await winInfo();
+check('手动开了 A2 后再点 A：还是切到 A1，不新开', w1.n === w0.n && w1.active === a1, JSON.stringify([w0, w1, a1, a2]));
+await sw.evaluate((id) => chrome.tabs.remove(id), a1);
+await sleep(800);
+w0 = await winInfo();
+await clickTile();
+w1 = await winInfo();
+check('关掉 A1 再点 A：认领开着的 A2，不新开', w1.n === w0.n && w1.active === a2, JSON.stringify([w0, w1, a2]));
+await sw.evaluate((id) => chrome.tabs.update(id, { url: 'http://other.test/away' }), a2);
+await sleep(1000);
+await panel.bringToFront(); await sleep(600);
+await tile.click({ button: 'right' });
+await sleep(300);
+await panel.locator('#menu button', { hasText: '回到原网址' }).click();
+await sleep(1200);
+w1 = await winInfo();
+check('右键「回到原网址」：A2 回到置顶的网址', w1.urls[a2] === 'http://site.test/pinA' && w1.n === w0.n, JSON.stringify(w1));
+
+console.log('两个窗口各自独立');
+const p2Promise = ctx.waitForEvent('page');
+const win2 = await sw.evaluate(async (u) => (await chrome.windows.create({ url: u })).id, `chrome-extension://${extId}/sidepanel.html`);
+const panelB = await p2Promise;
+await sleep(1500);
+const tileB = panelB.locator('#pinned .tile[title^="PinA"]');
+check('另一个窗口里 A 是灰的（A2 在第一个窗口）', !(await tileB.getAttribute('class')).includes('open'), await tileB.getAttribute('class'));
+await tileB.click();
+await sleep(1200);
+const inWin2 = await sw.evaluate(async (w) => (await chrome.tabs.query({ windowId: w })).filter((t) => (t.url || t.pendingUrl || '').includes('pinA')).length, win2);
+w1 = await winInfo();
+check('在另一个窗口点 A：在那个窗口新开，第一个窗口的 A2 不动', inWin2 === 1 && w1.ids.includes(a2), JSON.stringify([inWin2, w1]));
+await sw.evaluate((w) => chrome.windows.remove(w), win2);
+await sleep(500);
+
 console.log('从旧版本升级');
 // 写入 0.9.x 的旧数据（今日 + 一个收藏 + 本机副本），重启浏览器
 await sw.evaluate(async () => {
@@ -230,7 +288,7 @@ await sleep(1500);
 const panel2 = await ctx.newPage();
 await panel2.goto(`chrome-extension://${extId}/sidepanel.html`);
 await sleep(1500);
-check('置顶还在', (await panel2.locator('#pinned .tile[title]').count()) === 1);
+check('置顶还在（两个）', (await panel2.locator('#pinned .tile[title]').count()) === 2, String(await panel2.locator('#pinned .tile[title]').count()));
 check('收藏还在（文件夹和网址）', (await panel2.locator('#saved .row').count()) >= 3, String(await panel2.locator('#saved .row').count()));
 list = await bmList();
 check('没有重复建 Side Pocket 文件夹', list.filter((x) => x === '置顶/').length === 1, JSON.stringify(list));

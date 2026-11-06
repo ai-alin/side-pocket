@@ -11,6 +11,7 @@ import * as M from './model.js';
 import * as B from './bookmarks.js';
 import * as D from './devices.js';
 import * as L from './legacy.js';
+import * as C from './claims.js';
 
 const SELF_PREFIX = chrome.runtime.getURL('');
 const UPLOAD_ALARM = 'side-pocket-upload';
@@ -246,6 +247,46 @@ async function deviceOp(op, a) {
   }
   throw new Error('未知操作: ' + op);
 }
+
+/* ---------- 置顶 / 收藏认领的标签：跟着标签走 ---------- */
+// 认领记录由侧栏写（claims.js），这里只处理侧栏顾不到的：标签拖到别的窗口、窗口关闭。
+
+const moving = new Map(); // 标签 id -> 拖出来时它属于的节点 id
+
+async function getClaims(winId) {
+  return (await chrome.storage.session.get(C.keyOf(winId)))[C.keyOf(winId)] || {};
+}
+
+chrome.tabs.onDetached.addListener(async (tabId, info) => {
+  const { next, nodes } = C.release(await getClaims(info.oldWindowId), tabId);
+  if (!nodes.length) return;
+  moving.set(tabId, nodes);
+  await chrome.storage.session.set({ [C.keyOf(info.oldWindowId)]: next });
+});
+
+chrome.tabs.onAttached.addListener(async (tabId, info) => {
+  const nodes = moving.get(tabId);
+  moving.delete(tabId);
+  if (!nodes?.length) return;
+  // 新窗口里这个置顶 / 收藏还没有自己的标签，才归它；已经有了就变成普通标签
+  let cur = await getClaims(info.newWindowId);
+  const here = new Set((await chrome.tabs.query({ windowId: info.newWindowId })).map((t) => t.id));
+  for (const nid of nodes) if (!here.has(cur[nid])) cur = C.claim(cur, nid, tabId);
+  await chrome.storage.session.set({ [C.keyOf(info.newWindowId)]: cur });
+});
+
+// 标签被换掉（预加载等）：认领跟着换到新标签
+chrome.tabs.onReplaced.addListener(async (added, removed) => {
+  const tab = await chrome.tabs.get(added).catch(() => null);
+  if (!tab) return;
+  const cur = await getClaims(tab.windowId);
+  const { next, nodes } = C.release(cur, removed);
+  if (!nodes.length) return;
+  for (const nid of nodes) next[nid] = added;
+  await chrome.storage.session.set({ [C.keyOf(tab.windowId)]: next });
+});
+
+chrome.windows.onRemoved.addListener((winId) => chrome.storage.session.remove(C.keyOf(winId)).catch(() => {}));
 
 /* ---------- 升级清理 ---------- */
 

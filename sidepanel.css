@@ -282,6 +282,10 @@ img { -webkit-user-drag: none; pointer-events: none; }
 .ghost-row .title { font-weight: 400; }
 .ghost-row:hover { color: var(--fg); }
 
+/* 这个窗口里被置顶 / 收藏认领的标签：标题前一个小图钉 */
+.row.tab .claim-ico { width: 11px; height: 11px; flex: none; margin-right: -4px; color: var(--accent); }
+.row.tab .claim-ico svg { width: 100%; height: 100%; display: block; }
+
 /* ---------- 其他电脑 ---------- */
 .row.device-head { cursor: pointer; }
 .row.device-head .title { font-weight: 600; }
