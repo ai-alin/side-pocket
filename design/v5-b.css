@@ -1,0 +1,46 @@
+/* B · 安静灰：暖灰底，几乎不用彩色；当前行是中性灰底，强调色只留给「开着」的小圆点和输入焦点。行更紧凑。 */
+:root {
+  --solid-bg: #F7F7F5;
+  --fg: #37352F;
+  --muted: #787774;
+  --dim: #9B9A97;
+  --hover: rgba(55, 53, 47, 0.06);
+  --press: rgba(55, 53, 47, 0.11);
+  --field: rgba(55, 53, 47, 0.06);
+  --line: rgba(55, 53, 47, 0.13);
+  --guide: rgba(55, 53, 47, 0.16);
+  --accent: #2383E2;
+  --accent-soft: rgba(35, 131, 226, 0.12);
+  --active: rgba(55, 53, 47, 0.1);
+  --hover-solid: #ECECE9;
+  --active-solid: #E4E4E1;
+  --float: #FFFFFF;
+  --row-h: 30px;
+  --r: 6px;
+  --r-l: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --solid-bg: #202020;
+    --fg: #D4D4D4;
+    --muted: #9B9B9B;
+    --dim: #7F7F7F;
+    --hover: rgba(255, 255, 255, 0.055);
+    --press: rgba(255, 255, 255, 0.1);
+    --field: rgba(255, 255, 255, 0.055);
+    --line: rgba(255, 255, 255, 0.13);
+    --guide: rgba(255, 255, 255, 0.16);
+    --accent: #5EA9E8;
+    --accent-soft: rgba(94, 169, 232, 0.16);
+    --active: rgba(255, 255, 255, 0.1);
+    --hover-solid: #2C2C2C;
+    --active-solid: #363636;
+    --float: #2A2A2A;
+  }
+}
+.row { margin: 0; }
+.sec-head { margin: 20px 8px 4px; }
+.tile { height: 44px; background: none; box-shadow: inset 0 0 0 1px var(--line); }
+.tile:hover { background: var(--hover); }
+.tile.active { background: var(--active); box-shadow: none; }
+.side-footer { border-top: none; }

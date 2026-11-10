@@ -95,6 +95,31 @@ await sleep(500);
 const clip = await panel.evaluate(() => window.__clip);
 check('右键「复制链接」：不申请剪贴板权限也能复制', JSON.stringify(clip) === '["ok:http://site.test/a2"]' && (await panel.locator('#status').textContent()) === '已复制链接', JSON.stringify(clip));
 
+console.log('当前标签自动滚进视野');
+check('侧栏里没有自己的关闭按钮（Chrome 侧边栏标题栏上已经有 ✕）', (await panel.locator('#toggle-collapse').count()) === 0);
+const extra = await sw.evaluate(async (w) => { const out = []; for (let i = 0; i < 24; i++) out.push((await chrome.tabs.create({ windowId: w, url: 'http://site.test/many' + i, active: false })).id); return out; }, panelWin);
+await sleep(1500);
+// 测试里侧栏是一个普通标签页，切到别的标签它就到后台了；真正的侧边栏一直看得见，这里装成那样
+await panel.evaluate(() => { Object.defineProperty(document, 'hidden', { get: () => false }); document.hasFocus = () => false; document.querySelector('#scroll').scrollTop = 0; });
+const inView = (id) => panel.evaluate((id) => {
+  const r = document.querySelector(`#tabs .row.tab[data-tab="${id}"]`)?.getBoundingClientRect();
+  const s = document.querySelector('#scroll').getBoundingClientRect();
+  return !!r && r.top >= s.top && r.bottom <= s.bottom;
+}, id);
+const lastTab = extra.at(-1);
+check('标签很多时，最后一个标签一开始在屏幕外', !(await inView(lastTab)));
+await sw.evaluate((id) => chrome.tabs.update(id, { active: true }), lastTab);
+check('在 Chrome 里切到它：侧栏自动把它滚进视野，并标成当前', !!(await until(async () => (await inView(lastTab)) && (await panel.locator(`#tabs .row.tab.active[data-tab="${lastTab}"]`).count()) === 1, 5000)));
+await panel.evaluate(() => { document.hasFocus = () => true; document.querySelector('#scroll').scrollTop = 0; });
+await sw.evaluate((id) => chrome.tabs.update(id, { active: true }), extra.at(-2));
+await sleep(1200);
+check('正在侧栏里操作时（侧栏有焦点）：不自动滚动', (await panel.evaluate(() => document.querySelector('#scroll').scrollTop)) === 0);
+await sw.evaluate((ids) => chrome.tabs.remove(ids), extra);
+await panel.bringToFront();
+await panel.evaluate(() => { delete document.hidden; delete document.hasFocus; });
+await sleep(1200);
+check('关掉这些标签后，侧栏和 Chrome 还是一样', await same(), JSON.stringify([await shownTabs(), await chromeTabs()]));
+
 console.log('其他电脑：上传本机清单');
 const selfId = await sw.evaluate(async () => (await chrome.storage.local.get('deviceId')).deviceId);
 const mine = await until(() => sw.evaluate(async (id) => {
@@ -213,6 +238,18 @@ await sleep(800);
 list = await bmList();
 const colors = await sw.evaluate(async () => (await chrome.storage.sync.get('ui.folderColors'))['ui.folderColors']);
 check('新建文件夹：建在书签里，颜色另外记下', list.includes('工作/') && colors?.['工作'] === 'green', JSON.stringify([list, colors]));
+const wellBg = (title) => panel.locator('#saved .folder-well', { has: panel.locator('> .row.folder', { hasText: title }) }).first().evaluate((w) => [w.className, getComputedStyle(w).backgroundColor]);
+const [wellCls, wellColor] = await wellBg('工作');
+check('有颜色的文件夹：整块铺一层这个颜色的淡底', wellCls.includes('tinted') && !/rgba\(0, 0, 0, 0\)|transparent/.test(wellColor), JSON.stringify([wellCls, wellColor]));
+const plain = (await sendOp('addFolder', { id: 'tmpfold2', title: '没颜色', parent: fid }))?.result;
+await sleep(800);
+const [plainCls, plainColor] = await wellBg('没颜色');
+const plainIcon = await panel.locator('#saved .row.folder', { hasText: '没颜色' }).locator('.folder-ico').evaluate((x) => getComputedStyle(x).color);
+const greenIcon = await panel.locator('#saved .row.folder', { hasText: '工作' }).locator('.folder-ico').evaluate((x) => getComputedStyle(x).color);
+check('里面没设颜色的子文件夹：自己不铺底，图标也不跟着外层变色', !plainCls.includes('tinted') && /rgba\(0, 0, 0, 0\)|transparent/.test(plainColor) && plainIcon !== greenIcon, JSON.stringify([plainCls, plainColor, plainIcon, greenIcon]));
+await sendOp('remove', { id: plain });
+await sleep(600);
+check('置顶格子下面显示标题', (await panel.locator('#pinned .tile .tile-label').first().textContent()).length > 0, await panel.locator('#pinned .tile').first().innerHTML());
 
 console.log('删除后可以撤销');
 await sendOp('saveTab', { url: 'http://site.test/in-folder', title: '文件夹里的网页', parent: fid });

@@ -1,0 +1,5 @@
+/* A · Chrome 原生：白底、Chrome 蓝、当前行淡蓝底。颜色沿用 sidepanel-v4.css。 */
+:root { --hover-solid: #F2F2F2; --active-solid: #E7EEFA; }
+@media (prefers-color-scheme: dark) {
+  :root { --hover-solid: #2F2F2F; --active-solid: #353A42; }
+}

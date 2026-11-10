@@ -1,0 +1,29 @@
+/* 第五轮三版共用（叠在 sidepanel-v4.css 上面）：
+ * 1. 开着的置顶 / 收藏用字重区分（开着 500，没开 400 加灰）
+ * 2. 文件夹层级线平时不显示，鼠标移进收藏区才出现
+ * 3. 悬停时操作按钮盖在行的右端，不把标题挤短；计数、箭头、「已开着」位置不动
+ * 每一版要给出 --hover-solid / --active-solid：行在悬停 / 当前状态下的不透明底色，给按钮垫底用。
+ */
+.row.link.open .title { font-weight: 500; }
+
+.folder-children::before { opacity: 0; transition: opacity 160ms ease; }
+#saved:hover .folder-children::before, body.is-dragging .folder-children::before { opacity: 1; }
+
+.row { --row-solid: var(--solid-bg); }
+.row:hover, .row.demo-hover { --row-solid: var(--hover-solid); }
+.row.active { --row-solid: var(--active-solid); }
+.row .actions {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  margin: 0;
+  padding-left: 6px;
+  border-radius: 6px;
+  background: var(--row-solid);
+  box-shadow: -8px 0 6px var(--row-solid); /* 左边缘虚一点：被盖住的标题是淡出去的，不是被一刀切断 */
+}
+.row.folder .actions { right: 26px; }
+.row.folder:hover .cnt, .row.folder.menu-open .cnt, .row.device-head:hover .cnt, .row.device-head.menu-open .cnt { display: flex; visibility: hidden; }
+.row.folder:hover .caret, .row.folder.menu-open .caret { display: block; }
+.row.remote:hover .tag, .row.remote.menu-open .tag { display: inline; visibility: hidden; }

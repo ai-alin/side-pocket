@@ -466,6 +466,7 @@ function renderPinned() {
         'div',
         { class: 'tile' + openCls(n), title: savedTip(n) === n.url ? displayTitle(n) : `${displayTitle(n)}\n现在：${tabTitle(savedTab(n).tab)}`, draggable: 'true', 'data-id': id, role: 'button', tabindex: '0' },
         favImg(n.url, '', 64),
+        el('span', { class: 'tile-label' }, displayTitle(n)),
       );
     }),
   );
@@ -499,7 +500,8 @@ function renderSaved() {
       if (!kids.length) kids.push(el('div', { class: 'empty' }, '空文件夹，把网站拖进来'));
       return el(
         'div',
-        { class: 'folder-well' + (n.collapsed ? ' collapsed' : ''), 'data-folder': n.id },
+        // 有颜色的文件夹：整块（文件夹名 + 里面的内容）铺一层这个颜色的淡底
+        { class: 'folder-well' + (n.collapsed ? ' collapsed' : '') + (n.color ? ' tinted' : ''), style: n.color ? `--fc:var(--c-${n.color})` : null, 'data-folder': n.id },
         folderRow(n),
         el('div', { class: 'folder-children-wrap' }, el('div', { class: 'folder-children' }, ...kids)),
       );
@@ -596,9 +598,20 @@ function tabRow(t) {
   );
 }
 
+let shownActive; // 上次渲染时的当前标签 id；undefined = 还没渲染过，null = 那时没有当前标签
+
 function renderWindow() {
   $('#tab-count').textContent = winTabs.length ? String(winTabs.length) : '';
   patchChildren($('#tabs'), winTabs.map(tabRow));
+  // 当前标签换了：把它那一行滚进视野。
+  // 刚打开侧栏时不滚（先看到最上面的置顶和收藏）；正在侧栏里操作时也不滚（点了上面的置顶，列表不该从手底下跑掉）
+  const active = winTabs.find((t) => t.active)?.id ?? null;
+  if (active === shownActive) return;
+  const first = shownActive === undefined;
+  shownActive = active;
+  if (active == null || first || drag || document.hasFocus()) return;
+  const calm = matchMedia('(prefers-reduced-motion: reduce)').matches || document.visibilityState !== 'visible';
+  document.querySelector(`#tabs .row.tab[data-tab="${active}"]`)?.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' });
 }
 
 function remoteRow(dev, i) {
@@ -844,7 +857,6 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('input.rename, #settings-pop')) return;
   if (e.target.closest('#new-folder')) return newFolder();
   if (e.target.closest('#new-tab')) return chrome.tabs.create({ windowId: winId ?? undefined });
-  if (e.target.closest('#toggle-collapse')) return closeSidePanel();
   const t = targetOf(e);
   if (!t.kind) return;
   const act = e.target.closest('[data-act]')?.dataset.act;
@@ -1160,12 +1172,6 @@ async function refreshSettingsUi() {
   const input = $('#device-name');
   if (document.activeElement !== input && info?.ok) input.value = info.result.name;
   if (info?.ok) $('#share-tabs').checked = info.result.share !== false;
-}
-
-/** 关闭 Chrome 侧边栏（Chrome 标题栏上的 ✕、再按一次快捷键也可以） */
-function closeSidePanel() {
-  if (chrome.sidePanel.close && winId != null) chrome.sidePanel.close({ windowId: winId }).catch(() => window.close());
-  else window.close();
 }
 
 function setupChromeUi() {

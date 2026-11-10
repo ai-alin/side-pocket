@@ -1,0 +1,65 @@
+/* C · 有主题色：整个面板带一点色调，全部颜色由一个色相 --h 算出来（换一个数就换一套主题）。
+ * 当前行是一张平的白卡片；置顶格子下面带标题。 */
+:root {
+  --h: 268;
+  --solid-bg: oklch(95.5% 0.02 var(--h));
+  --fg: oklch(24% 0.03 var(--h));
+  --muted: oklch(48% 0.03 var(--h));
+  --dim: oklch(60% 0.03 var(--h));
+  --hover: oklch(24% 0.03 var(--h) / 0.06);
+  --press: oklch(24% 0.03 var(--h) / 0.11);
+  --field: oklch(24% 0.03 var(--h) / 0.06);
+  --line: oklch(24% 0.03 var(--h) / 0.13);
+  --guide: oklch(24% 0.03 var(--h) / 0.18);
+  --accent: oklch(50% 0.19 var(--h));
+  --accent-soft: oklch(50% 0.19 var(--h) / 0.12);
+  --active: #FFFFFF;
+  --hover-solid: oklch(91.5% 0.022 var(--h));
+  --active-solid: #FFFFFF;
+  --float: #FFFFFF;
+  --tile: oklch(100% 0 0 / 0.6);
+  --r: 10px;
+  --r-l: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --solid-bg: oklch(22.5% 0.025 var(--h));
+    --fg: oklch(93% 0.015 var(--h));
+    --muted: oklch(70% 0.03 var(--h));
+    --dim: oklch(58% 0.03 var(--h));
+    --hover: oklch(100% 0 0 / 0.07);
+    --press: oklch(100% 0 0 / 0.12);
+    --field: oklch(100% 0 0 / 0.07);
+    --line: oklch(100% 0 0 / 0.13);
+    --guide: oklch(100% 0 0 / 0.18);
+    --accent: oklch(80% 0.11 var(--h));
+    --accent-soft: oklch(80% 0.11 var(--h) / 0.18);
+    --active: oklch(35% 0.035 var(--h));
+    --hover-solid: oklch(28% 0.027 var(--h));
+    --active-solid: oklch(35% 0.035 var(--h));
+    --float: oklch(28% 0.027 var(--h));
+    --tile: oklch(100% 0 0 / 0.06);
+  }
+}
+.search { background: var(--tile); }
+.search:focus-within { background: var(--active); }
+.tile { height: 62px; background: var(--tile); }
+.tile:hover { background: var(--active); }
+.tile.active { background: var(--active); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.tile img { margin-bottom: 16px; }
+.tile::before {
+  content: attr(title);
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  bottom: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+.tile.active::before { color: var(--fg); }
+.tile.open::after { top: 7px; right: 7px; bottom: auto; left: auto; margin: 0; }
+.side-footer { border-top: none; }
