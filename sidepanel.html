@@ -28,12 +28,12 @@
       <div id="browse">
         <section id="pinned-section" class="section">
           <header class="sec-head"><span>置顶</span></header>
-          <div id="pinned" class="pinned-list" data-drop="pinned"></div>
+          <div id="pinned" class="pinned-list"></div>
         </section>
 
         <section id="saved-section" class="section">
           <header class="sec-head"><span>收藏</span></header>
-          <div id="saved" class="tree" data-drop="root"></div>
+          <div id="saved" class="tree"></div>
           <button id="new-folder" class="row ghost-row" type="button">
             <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 15.4H4.5c-.97 0-1.75-.78-1.75-1.75V5.6c0-.97.78-1.75 1.75-1.75h3.05l1.65 1.8h6.3c.97 0 1.75.78 1.75 1.75v2.3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M15 12v5M12.5 14.5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
             <span class="title">新建文件夹</span>
@@ -73,6 +73,13 @@
     <div class="settings-title">这台电脑的名字</div>
     <input id="device-name" class="settings-input" type="text" maxlength="40" placeholder="比如：公司、家里" autocomplete="off" spellcheck="false" aria-label="这台电脑的名字" />
     <p class="settings-note settings-note-tight">在其他电脑的「其他电脑」里显示这个名字。</p>
+
+    <div class="settings-title settings-title-gap">其他电脑</div>
+    <label class="settings-check">
+      <input id="share-tabs" type="checkbox" checked />
+      <span>把这台电脑开着的网页同步到我的其他电脑</span>
+    </label>
+    <p class="settings-note settings-note-tight">通过 Chrome 同步保存在你的 Google 账号里，只有你的其他电脑能看到。关掉后会把这台电脑的清单删掉。</p>
 
     <div class="settings-title settings-title-gap">快捷键</div>
     <div class="shortcut-row">

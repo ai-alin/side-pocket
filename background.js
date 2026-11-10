@@ -3,6 +3,7 @@
 // 2. 其他电脑：把本机开着的网页清单上传到 chrome.storage.sync（devices.js），别的电脑只读。
 //    标签有变化 2 秒后上传，两次上传至少隔 10 秒（Chrome 限制同步写入频率）；每 30 分钟心跳一次，
 //    让别的电脑看到「最后更新」时间。关窗口、退出浏览器时不上传，清单保留最后的样子。
+//    设置里可以关掉上传：关掉后把本机清单从同步存储里删掉，别的电脑的清单照常能看。
 // 3. 升级清理：0.9.x 及以前的「今日」数据全部删掉，旧数据里的置顶 / 收藏搬进书签（legacy.js）。
 // 本机标签不经过后台：侧栏直接读 chrome.tabs。
 // 所有读写走一个串行队列，避免交错。
@@ -20,7 +21,9 @@ const OLD_ALARMS = ['side-pocket-flush', 'arc-flush'];
 const UPLOAD_DELAY = 2000;
 const UPLOAD_GAP = 10000;
 const HEARTBEAT_MIN = 30;
-const LAST_KEY = 'devices.last'; // storage.local：上次上传的内容摘要和块数
+const LAST_KEY = 'devices.last'; // storage.local：上次上传的内容摘要、块数、每一块的内容；{ off: true } = 已停止上传并删掉了清单
+const SHARE_KEY = 'devices.share'; // storage.local：false = 不上传这台电脑开着的网页（默认上传）
+const UNDO_KEY = 'undo.removed'; // storage.session：刚删掉的置顶 / 收藏，撤销时照着重建
 const NAME_KEY = 'deviceName'; // storage.local：这台电脑的名字
 const BACKUP_KEY = 'backup.before0100'; // storage.local：升级到 0.10.0 删除旧数据前的完整备份
 
@@ -64,6 +67,7 @@ async function init() {
     deviceId = M.newId();
     await chrome.storage.local.set({ deviceId });
   }
+  if (!(await shareOn())) status = 'off';
   await reloadSaved();
   // 清理失败不能拖垮其他功能：旧数据还在原处、也有备份，下次启动再试
   await cleanupLegacy({ full: true }).catch((e) => console.error('[side-pocket] 清理旧数据失败', e));
@@ -124,7 +128,11 @@ async function savedOp(op, a) {
   let result = false;
   if (op === 'addFolder') result = await B.addFolder(bm, ids, saved, v, a);
   else if (op === 'rename') result = await B.rename(bm, saved, a.id, a.title);
-  else if (op === 'remove') result = await B.removeSaved(bm, saved, a.id);
+  else if (op === 'remove') {
+    const snap = await B.snapshot(bm, saved, a.id, await getColors()).catch(() => null);
+    result = await B.removeSaved(bm, saved, a.id);
+    if (result && snap) await chrome.storage.session.set({ [UNDO_KEY]: snap });
+  } else if (op === 'undoRemove') result = await undoRemove();
   else if (op === 'unpin') result = v.parent[a.id] === M.PINNED && (await B.moveSaved(bm, ids, saved, v, a.id, M.ROOT));
   else if (op === 'move') result = await B.moveSaved(bm, ids, saved, v, a.id, a.parent ?? M.ROOT, a.index);
   else if (op === 'pin') result = saved[a.id]?.type === 'link' && (await B.moveSaved(bm, ids, saved, v, a.id, M.PINNED, a.index));
@@ -142,7 +150,60 @@ async function savedOp(op, a) {
   return result;
 }
 
+/** 撤销刚才的删除：照着删除前记下的样子重建书签，颜色、折叠状态、认领的标签都接回去 */
+async function undoRemove() {
+  const snap = (await chrome.storage.session.get(UNDO_KEY))[UNDO_KEY];
+  if (!snap) return false;
+  await chrome.storage.session.remove(UNDO_KEY);
+  const { map, inPlace } = await B.restore(bm, ids, snap);
+  const idMap = Object.fromEntries(Object.entries(map).map(([o, n]) => [B.toId(o), B.toId(n)]));
+  const remap = (obj) => {
+    let changed = false;
+    const out = {};
+    for (const [k, val] of Object.entries(obj || {})) {
+      if (idMap[k]) changed = true;
+      out[idMap[k] || k] = val;
+    }
+    return changed ? out : null;
+  };
+  if (inPlace && Object.keys(snap.colors || {}).length) {
+    await chrome.storage.sync.set({ [B.COLOR_KEY]: { ...(await getColors()), ...snap.colors } });
+  }
+  const folded = remap((await chrome.storage.local.get(B.COLLAPSE_KEY))[B.COLLAPSE_KEY]);
+  if (folded) await chrome.storage.local.set({ [B.COLLAPSE_KEY]: folded });
+  await claimRun(async () => {
+    const all = await chrome.storage.session.get(null);
+    const set = {};
+    for (const [k, val] of Object.entries(all)) {
+      const next = k.startsWith(C.keyOf('')) ? remap(val) : null;
+      if (next) set[k] = next;
+    }
+    if (Object.keys(set).length) await chrome.storage.session.set(set);
+  });
+  return true;
+}
+
 /* ---------- 其他电脑：上传本机清单 ---------- */
+
+async function shareOn() {
+  return (await chrome.storage.local.get(SHARE_KEY))[SHARE_KEY] !== false;
+}
+
+/** 关掉上传后：把本机清单从同步存储里删掉（只做一次） */
+async function stopSharing(last) {
+  status = 'off';
+  if (last.off) return false;
+  try {
+    const keys = D.deviceKeys(await chrome.storage.sync.get(null), deviceId);
+    if (keys.length) await chrome.storage.sync.remove(keys);
+  } catch (e) {
+    chrome.alarms.create(UPLOAD_ALARM, { delayInMinutes: 1 });
+    return false;
+  }
+  await chrome.storage.local.set({ [LAST_KEY]: { off: true } });
+  chrome.alarms.clear(UPLOAD_ALARM);
+  return true;
+}
 
 async function getName() {
   const d = await chrome.storage.local.get(NAME_KEY);
@@ -160,16 +221,21 @@ function classify(e) {
 
 let lastUpload = 0;
 
-/** force：内容没变也上传（心跳、改名后），用来更新「最后更新」时间 */
+/**
+ * force：内容没变也上传（心跳、改名后），用来更新「最后更新」时间，并且每一块都重写一遍
+ * （万一同步存储里的块和本机记的不一致，最多半小时后自己恢复）。
+ * 平时只写内容变了的块。
+ */
 async function upload({ force = false } = {}) {
   lastUpload = Date.now();
+  const last = (await chrome.storage.local.get(LAST_KEY))[LAST_KEY] || {};
+  if (!(await shareOn())) return stopSharing(last);
   const tabs = (await chrome.tabs.query({})).filter((t) => !isSelf(t));
   const items = D.buildSnapshot(tabs);
   const name = await getName();
   const hash = JSON.stringify([name, items]);
-  const last = (await chrome.storage.local.get(LAST_KEY))[LAST_KEY] || {};
   if (!force && last.hash === hash && status === 'saved') return false;
-  const write = async (opts) => {
+  const write = async (opts = {}) => {
     const plan = D.writePlan(deviceId, name, Date.now(), items, last.chunks || 0, opts);
     await chrome.storage.sync.set(plan.set);
     if (plan.remove.length) await chrome.storage.sync.remove(plan.remove);
@@ -177,7 +243,7 @@ async function upload({ force = false } = {}) {
   };
   let plan;
   try {
-    plan = await write();
+    plan = await write(force ? {} : { sent: last.sent });
     status = 'saved';
   } catch (e) {
     const kind = classify(e);
@@ -194,7 +260,7 @@ async function upload({ force = false } = {}) {
       return false;
     }
   }
-  await chrome.storage.local.set({ [LAST_KEY]: { hash, chunks: plan.chunks, at: Date.now() } });
+  await chrome.storage.local.set({ [LAST_KEY]: { hash, chunks: plan.chunks, sent: plan.sent, at: Date.now() } });
   chrome.alarms.clear(UPLOAD_ALARM);
   return true;
 }
@@ -239,6 +305,13 @@ async function deviceOp(op, a) {
     await upload({ force: true });
     return getName();
   }
+  if (op === 'setShare') {
+    if (a.on === false) await chrome.storage.local.set({ [SHARE_KEY]: false });
+    else await chrome.storage.local.remove(SHARE_KEY);
+    await chrome.storage.local.remove(LAST_KEY);
+    await upload({ force: true });
+    return a.on !== false;
+  }
   if (op === 'removeDevice') {
     if (!D.isDeviceId(a.id) || a.id === deviceId) throw new Error('无效设备');
     const keys = D.deviceKeys(await chrome.storage.sync.get(null), a.id);
@@ -253,38 +326,64 @@ async function deviceOp(op, a) {
 
 const moving = new Map(); // 标签 id -> 拖出来时它属于的节点 id
 
+// 认领记录的每次「读出来、改、写回去」排队做：侧栏点击和这里的标签事件同时改时不会互相盖掉
+let claimChain = Promise.resolve();
+function claimRun(fn) {
+  const p = claimChain.then(fn);
+  claimChain = p.catch((e) => console.error('[side-pocket]', e));
+  return p;
+}
+
 async function getClaims(winId) {
   return (await chrome.storage.session.get(C.keyOf(winId)))[C.keyOf(winId)] || {};
 }
 
-chrome.tabs.onDetached.addListener(async (tabId, info) => {
-  const { next, nodes } = C.release(await getClaims(info.oldWindowId), tabId);
-  if (!nodes.length) return;
-  moving.set(tabId, nodes);
-  await chrome.storage.session.set({ [C.keyOf(info.oldWindowId)]: next });
-});
+chrome.tabs.onDetached.addListener((tabId, info) =>
+  claimRun(async () => {
+    const { next, nodes } = C.release(await getClaims(info.oldWindowId), tabId);
+    if (!nodes.length) return;
+    moving.set(tabId, nodes);
+    await chrome.storage.session.set({ [C.keyOf(info.oldWindowId)]: next });
+  }),
+);
 
-chrome.tabs.onAttached.addListener(async (tabId, info) => {
-  const nodes = moving.get(tabId);
-  moving.delete(tabId);
-  if (!nodes?.length) return;
-  // 新窗口里这个置顶 / 收藏还没有自己的标签，才归它；已经有了就变成普通标签
-  let cur = await getClaims(info.newWindowId);
-  const here = new Set((await chrome.tabs.query({ windowId: info.newWindowId })).map((t) => t.id));
-  for (const nid of nodes) if (!here.has(cur[nid])) cur = C.claim(cur, nid, tabId);
-  await chrome.storage.session.set({ [C.keyOf(info.newWindowId)]: cur });
-});
+chrome.tabs.onAttached.addListener((tabId, info) =>
+  claimRun(async () => {
+    const nodes = moving.get(tabId);
+    moving.delete(tabId);
+    if (!nodes?.length) return;
+    // 新窗口里这个置顶 / 收藏还没有自己的标签，才归它；已经有了就变成普通标签
+    let cur = await getClaims(info.newWindowId);
+    const here = new Set((await chrome.tabs.query({ windowId: info.newWindowId })).map((t) => t.id));
+    for (const nid of nodes) if (!here.has(cur[nid])) cur = C.claim(cur, nid, tabId);
+    await chrome.storage.session.set({ [C.keyOf(info.newWindowId)]: cur });
+  }),
+);
 
 // 标签被换掉（预加载等）：认领跟着换到新标签
-chrome.tabs.onReplaced.addListener(async (added, removed) => {
-  const tab = await chrome.tabs.get(added).catch(() => null);
-  if (!tab) return;
-  const cur = await getClaims(tab.windowId);
-  const { next, nodes } = C.release(cur, removed);
-  if (!nodes.length) return;
-  for (const nid of nodes) next[nid] = added;
-  await chrome.storage.session.set({ [C.keyOf(tab.windowId)]: next });
-});
+chrome.tabs.onReplaced.addListener((added, removed) =>
+  claimRun(async () => {
+    const tab = await chrome.tabs.get(added).catch(() => null);
+    if (!tab) return;
+    const cur = await getClaims(tab.windowId);
+    const { next, nodes } = C.release(cur, removed);
+    if (!nodes.length) return;
+    for (const nid of nodes) next[nid] = added;
+    await chrome.storage.session.set({ [C.keyOf(tab.windowId)]: next });
+  }),
+);
+
+/** 侧栏发来的认领：记下「这个窗口里，这个标签归这个置顶 / 收藏」，返回这个窗口最新的认领记录 */
+function claimOp(a) {
+  if (!Number.isInteger(a.winId) || !Number.isInteger(a.tid) || typeof a.nid !== 'string' || !a.nid || a.nid.length > 64) {
+    return Promise.reject(new Error('无效认领'));
+  }
+  return claimRun(async () => {
+    const next = C.claim(await getClaims(a.winId), a.nid, a.tid);
+    await chrome.storage.session.set({ [C.keyOf(a.winId)]: next });
+    return next;
+  });
+}
 
 chrome.windows.onRemoved.addListener((winId) => chrome.storage.session.remove(C.keyOf(winId)).catch(() => {}));
 
@@ -326,6 +425,12 @@ let legacyTimer = null;
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'sync') return;
   // 还没升级的旧版电脑写回来了置顶 / 收藏
+  // 别的电脑把这台电脑从「其他电脑」里移除了：忘掉上次传过什么，下次有变化时整份重传
+  if (Object.entries(changes).some(([k, c]) => k.startsWith(D.META) && c.newValue === undefined)) {
+    run(async () => {
+      if (changes[D.metaKey(deviceId)] && (await shareOn())) await chrome.storage.local.remove(LAST_KEY);
+    });
+  }
   const back = Object.entries(changes).some(([k, c]) => k.startsWith('n:') && c.newValue && c.newValue.p !== 'today');
   if (!back) return;
   clearTimeout(legacyTimer);
@@ -334,8 +439,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 /* ---------- 侧栏发来的操作 ---------- */
 
-const SAVED_OPS = new Set(['addFolder', 'rename', 'remove', 'move', 'pin', 'unpin', 'setColor', 'setCollapsed', 'saveTab']);
-const DEVICE_OPS = new Set(['setDeviceName', 'removeDevice']);
+const SAVED_OPS = new Set(['addFolder', 'rename', 'remove', 'move', 'pin', 'unpin', 'setColor', 'setCollapsed', 'saveTab', 'undoRemove']);
+const DEVICE_OPS = new Set(['setDeviceName', 'removeDevice', 'setShare']);
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id || !msg || typeof msg.type !== 'string') return false;
@@ -355,7 +460,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return reply(Promise.reject(new Error('未知操作')));
   }
   if (msg.type === 'side-pocket:upload') return reply(run(() => upload({ force: true })));
-  if (msg.type === 'side-pocket:info') return reply(run(async () => ({ deviceId, name: await getName() })));
+  if (msg.type === 'side-pocket:claim') return reply(claimOp(msg));
+  if (msg.type === 'side-pocket:info') return reply(run(async () => ({ deviceId, name: await getName(), share: await shareOn() })));
   return false;
 });
 

@@ -1,6 +1,5 @@
 // 收藏和置顶存在 Chrome 书签里：其他书签 / Side Pocket，置顶是里面的「置顶」子文件夹。
 // 书签属于登录 Chrome 的 Google 账号，由 Chrome 自己同步；卸载插件书签也还在，重装后自动找回。
-// 「今日」不在这里，仍由 store.js 存在 chrome.storage.sync。
 //
 // 换算成侧栏用的节点（和 model.js 的节点同一格式，可以直接交给 view() 等函数）：
 //   id     'bkm' + 书签 id。书签 id 每台电脑不一样，所以这些 id 只在本机有意义，不往云端写
@@ -219,6 +218,51 @@ export async function removeSaved(bm, nodes, id) {
   if (n.type === 'folder') await bm.removeTree(toBid(id));
   else await bm.remove(toBid(id));
   return true;
+}
+
+/* ---------- 删除后撤销 ---------- */
+
+/**
+ * 删除前把这一项（文件夹连同里面的内容）记下来，撤销时照着重建。
+ * 返回 { parentId, index, tree: { title, url?, children? }, colors: { 文件夹路径: 颜色 }, ids: [原来的书签 id，先序] }
+ */
+export async function snapshot(bm, nodes, id, colors = {}) {
+  const n = nodes[id];
+  if (!n) return null;
+  const [top] = await bm.getSubTree(toBid(id));
+  if (!top) return null;
+  const kept = {};
+  const ids = [];
+  const strip = (b, path) => {
+    ids.push(b.id);
+    if (b.url) return { title: b.title || '', url: b.url };
+    if (path && colors[path]) kept[path] = colors[path];
+    return { title: b.title || '', children: (b.children || []).filter((c) => c.url || isFolder(c)).map((c) => strip(c, path ? path + '/' + c.title : '')) };
+  };
+  const tree = strip(top, n.type === 'folder' ? n.path : '');
+  return { parentId: top.parentId, index: top.index ?? null, tree, colors: kept, ids };
+}
+
+/**
+ * 照着 snapshot 重建。原来的父文件夹还在就放回原位，不在了就放到收藏顶层末尾。
+ * 返回 { map: { 原来的书签 id: 新书签 id }, inPlace: 是否放回了原位 }
+ */
+export async function restore(bm, ids, snap) {
+  let parentId = snap.parentId;
+  let index;
+  const siblings = await bm.getChildren(parentId).catch(() => null);
+  const inPlace = !!siblings;
+  if (inPlace) index = snap.index == null ? undefined : Math.min(snap.index, siblings.length);
+  else parentId = ids.root;
+  const map = {};
+  let k = 0;
+  const build = async (t, pid, at) => {
+    const b = await bm.create(withIndex(t.url ? { parentId: pid, title: t.title, url: t.url } : { parentId: pid, title: t.title }, at));
+    map[snap.ids[k++]] = b.id;
+    for (const c of t.children || []) await build(c, b.id);
+  };
+  await build(snap.tree, parentId, index);
+  return { map, inPlace };
 }
 
 /* ---------- 旧数据迁移 ---------- */

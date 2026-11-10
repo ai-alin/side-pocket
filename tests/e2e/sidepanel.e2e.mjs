@@ -42,12 +42,13 @@ const until = async (fn, ms = 15000) => {
 
 console.log('安装后');
 const shortcut = await sw.evaluate(async () => (await chrome.commands.getAll()).find((c) => c.name === '_execute_action')?.shortcut || '');
-check('快捷键已注册（默认 Command+B / Ctrl+B）', /B$/.test(shortcut), JSON.stringify(shortcut));
+check('快捷键已注册（默认 Command+Shift+Y / Ctrl+Shift+Y，不和网页里的加粗抢 Command+B）', /Y$/.test(shortcut) && !/\+B$/.test(shortcut), JSON.stringify(shortcut));
 const behavior = await sw.evaluate(() => chrome.sidePanel.getPanelBehavior());
 check('点工具栏图标 / 按快捷键：打开或关闭侧边栏', behavior.openPanelOnActionClick === true, JSON.stringify(behavior));
 const manifest = await sw.evaluate(() => chrome.runtime.getManifest());
 check('名字是 Side Pocket', manifest.name === 'Side Pocket' && manifest.action.default_title === '打开或关闭 Side Pocket', manifest.name);
 check('不申请「读取和修改所有网站」，不往网页里注入', !manifest.host_permissions && !manifest.content_scripts && !manifest.permissions.includes('scripting'));
+check('只申请用得到的权限', JSON.stringify([...manifest.permissions].sort()) === JSON.stringify(['alarms', 'bookmarks', 'favicon', 'sidePanel', 'storage', 'tabs']), JSON.stringify(manifest.permissions));
 
 const site = await ctx.newPage();
 await site.goto('http://site.test/a');
@@ -82,6 +83,17 @@ await panel.locator(`#tabs .row.tab[data-tab="${last}"] [data-act=close]`).click
 await sleep(1000);
 check('点 ✕：关掉这个标签，侧栏少一行', (await same()) && !(await chromeTabs()).includes(last), JSON.stringify([await shownTabs(), await chromeTabs()]));
 await panel.screenshot({ path: (process.env.OUT || '/tmp/') + 'sidepanel-window.png' });
+await panel.bringToFront();
+await panel.evaluate(() => {
+  const orig = navigator.clipboard.writeText.bind(navigator.clipboard);
+  window.__clip = [];
+  navigator.clipboard.writeText = (t) => orig(t).then(() => { window.__clip.push('ok:' + t); }, (e) => { window.__clip.push('err:' + e.message); throw e; });
+});
+await panel.locator('#tabs .row.tab[title="http://site.test/a2"]').first().click({ button: 'right' });
+await panel.locator('#menu button', { hasText: '复制链接' }).click();
+await sleep(500);
+const clip = await panel.evaluate(() => window.__clip);
+check('右键「复制链接」：不申请剪贴板权限也能复制', JSON.stringify(clip) === '["ok:http://site.test/a2"]' && (await panel.locator('#status').textContent()) === '已复制链接', JSON.stringify(clip));
 
 console.log('其他电脑：上传本机清单');
 const selfId = await sw.evaluate(async () => (await chrome.storage.local.get('deviceId')).deviceId);
@@ -129,6 +141,19 @@ await panel.locator('#device-name').press('Enter');
 await sleep(1200);
 const nm = await sw.evaluate(async (id) => (await chrome.storage.sync.get('dv:' + id))['dv:' + id]?.nm, selfId);
 check('改名后马上同步出去', nm === '家里', nm);
+const myKeys = () => sw.evaluate(async (id) => Object.keys(await chrome.storage.sync.get(null)).filter((k) => k === 'dv:' + id || k.startsWith(`dt:${id}:`)), selfId);
+check('上传开关默认是开的', (await panel.locator('#share-tabs').isChecked()) && (await myKeys()).length >= 2, JSON.stringify(await myKeys()));
+await panel.locator('#share-tabs').uncheck();
+await sleep(1200);
+check('关掉上传：本机清单从同步存储里删掉，底栏显示「未开启同步」', (await myKeys()).length === 0 && (await panel.locator('#sync-state').textContent()) === '未开启同步', JSON.stringify([await myKeys(), await panel.locator('#sync-state').textContent()]));
+await sw.evaluate(async (w) => chrome.tabs.create({ windowId: w, url: 'http://site.test/while-off', active: false }), panelWin);
+await sleep(13000);
+check('关着的时候开新网页：不上传', (await myKeys()).length === 0, JSON.stringify(await myKeys()));
+await panel.locator('#share-tabs').check();
+await sleep(1200);
+const backTabs = await sw.evaluate(async (id) => (await chrome.storage.sync.get(`dt:${id}:0`))[`dt:${id}:0`], selfId);
+check('重新打开：马上整份上传，底栏回到「已同步」', (await myKeys()).length >= 2 && backTabs?.some((t) => t[0] === 'http://site.test/while-off') && (await panel.locator('#sync-state').textContent()) === '已同步', JSON.stringify([await myKeys(), backTabs]));
+await panel.screenshot({ path: (process.env.OUT || '/tmp/') + 'sidepanel-settings.png' });
 const opened = ctx.waitForEvent('page', { timeout: 3000 }).catch(() => null);
 await panel.locator('#edit-shortcut').click();
 const sp = await opened;
@@ -188,6 +213,45 @@ await sleep(800);
 list = await bmList();
 const colors = await sw.evaluate(async () => (await chrome.storage.sync.get('ui.folderColors'))['ui.folderColors']);
 check('新建文件夹：建在书签里，颜色另外记下', list.includes('工作/') && colors?.['工作'] === 'green', JSON.stringify([list, colors]));
+
+console.log('删除后可以撤销');
+await sendOp('saveTab', { url: 'http://site.test/in-folder', title: '文件夹里的网页', parent: fid });
+await sendOp('setCollapsed', { id: fid, collapsed: true });
+await sleep(800);
+await panel.bringToFront();
+await panel.locator('#saved .row.folder', { hasText: '工作' }).click({ button: 'right' });
+await panel.locator('#menu button', { hasText: '删除文件夹（含 1 项）' }).click();
+await sleep(1000);
+list = await bmList();
+check('删除文件夹：书签里没了，出现「撤销」', !list.includes('工作/') && (await panel.locator('#status .status-act').textContent()) === '撤销' && (await panel.locator('#status').textContent()).includes('已删除文件夹「工作」（含 1 项）'), JSON.stringify([list, await panel.locator('#status').textContent()]));
+await panel.screenshot({ path: (process.env.OUT || '/tmp/') + 'sidepanel-undo.png' });
+await panel.locator('#status .status-act').click();
+await sleep(1200);
+list = await bmList();
+const colors2 = await sw.evaluate(async () => (await chrome.storage.sync.get('ui.folderColors'))['ui.folderColors']);
+const backRow = panel.locator('#saved .row.folder', { hasText: '工作' });
+check('点撤销：文件夹和里面的网页回来了，位置不变', list.includes('工作/') && list.includes('工作/http://site.test/in-folder') && list.indexOf('工作/') === list.length - 2, JSON.stringify(list));
+check('撤销后颜色和折叠状态还在', colors2?.['工作'] === 'green' && (await backRow.getAttribute('style'))?.includes('green') && (await backRow.getAttribute('class')).includes('is-collapsed'), JSON.stringify([colors2, await backRow.getAttribute('style'), await backRow.getAttribute('class')]));
+await sendOp('undoRemove', {});
+await sleep(500);
+check('撤销只能用一次，不会重复建', JSON.stringify(await bmList()) === JSON.stringify(list));
+const linkRow = panel.locator('#saved .row.link[title^="http://site.test/in-folder"]');
+await backRow.click(); // 展开
+await sleep(500);
+await linkRow.click(); // 打开并认领
+await sleep(1200);
+const claimedTab = await sw.evaluate(async (w) => (await chrome.tabs.query({ windowId: w, active: true }))[0], panelWin);
+await sw.evaluate((id) => chrome.tabs.update(id, { url: 'http://other.test/moved-away' }), claimedTab.id);
+await sleep(1200);
+await panel.bringToFront(); await sleep(400);
+await linkRow.click({ button: 'right' });
+await panel.locator('#menu button', { hasText: /^删除$/ }).click();
+await sleep(1000);
+await panel.locator('#status .status-act').click();
+await sleep(1200);
+check('删掉一个认领着标签的收藏再撤销：标签还是它的', (await linkRow.getAttribute('class')).includes('open') && (await panel.locator(`#tabs .row.tab[data-tab="${claimedTab.id}"] .claim-ico`).count()) === 1, await linkRow.getAttribute('class'));
+await sw.evaluate((id) => chrome.tabs.remove(id), claimedTab.id);
+await sleep(600);
 
 console.log('点置顶：一个置顶在这个窗口只对应一个标签');
 await sendOp('saveTab', { url: 'http://site.test/pinA', title: 'PinA', parent: 'pinned' });

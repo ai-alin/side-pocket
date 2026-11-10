@@ -74,14 +74,20 @@ export function packChunks(items, deviceId, { maxChunks = MAX_CHUNKS, limit = CH
 
 /**
  * 一次上传要写什么、删什么。prevChunks 是上次写过几块：这次块数变少时，把多出来的旧块删掉。
+ * opts.sent 是上次写进去的每一块（JSON 字符串）：内容没变的块这次不再写。
+ * 返回的 sent 是这次之后同步存储里每一块应有的内容，留着下次比较。
  */
-export function writePlan(deviceId, name, at, items, prevChunks = 0, opts) {
+export function writePlan(deviceId, name, at, items, prevChunks = 0, opts = {}) {
   const { chunks, skipped } = packChunks(items, deviceId, opts);
+  const prev = Array.isArray(opts.sent) ? opts.sent : [];
   const set = { [metaKey(deviceId)]: { nm: name, at, n: chunks.length, tot: items.length, sk: skipped } };
-  chunks.forEach((c, i) => (set[chunkKey(deviceId, i)] = c));
+  const sent = chunks.map((c) => JSON.stringify(c));
+  chunks.forEach((c, i) => {
+    if (sent[i] !== prev[i]) set[chunkKey(deviceId, i)] = c;
+  });
   const remove = [];
   for (let i = chunks.length; i < prevChunks; i++) remove.push(chunkKey(deviceId, i));
-  return { set, remove, chunks: chunks.length };
+  return { set, remove, chunks: chunks.length, sent };
 }
 
 /**

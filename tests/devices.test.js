@@ -36,6 +36,28 @@ test('上传计划：块数变少时删掉多出来的旧块', () => {
   assert.deepEqual(p.remove, ['dt:devabc1:1', 'dt:devabc1:2']);
 });
 
+test('上传计划：内容没变的块不再写，只写变了的块和概要', () => {
+  const items = Array.from({ length: 120 }, (_, i) => [`https://example.com/page/${i}?q=${'z'.repeat(60)}`, '标题'.repeat(10)]);
+  const first = D.writePlan('devabc1', '公司', 1000, items);
+  assert.ok(first.chunks >= 2);
+  assert.equal(Object.keys(first.set).length, first.chunks + 1); // 第一次：每一块 + 概要
+  assert.deepEqual(first.sent, Array.from({ length: first.chunks }, (_, i) => JSON.stringify(first.set[`dt:devabc1:${i}`])));
+  // 只在末尾多开一个网页：前面的块不动
+  const more = [...items.slice(0, -1), ['https://new.test/', '新开的']];
+  const second = D.writePlan('devabc1', '公司', 2000, more, first.chunks, { sent: first.sent });
+  assert.deepEqual(Object.keys(second.set).sort(), [`dt:devabc1:${first.chunks - 1}`, 'dv:devabc1']);
+  assert.equal(second.set['dv:devabc1'].at, 2000);
+  // 什么都没变：只写概要（更新时间）
+  const third = D.writePlan('devabc1', '公司', 3000, more, second.chunks, { sent: second.sent });
+  assert.deepEqual(Object.keys(third.set), ['dv:devabc1']);
+  // 不给上次的内容（心跳、改名）：整份重写
+  const full = D.writePlan('devabc1', '公司', 4000, more, second.chunks);
+  assert.equal(Object.keys(full.set).length, full.chunks + 1);
+  // 和整份重写的结果拼起来一样
+  const merged = { ...first.set, ...second.set };
+  for (const k of Object.keys(full.set)) if (k.startsWith('dt:')) assert.deepEqual(merged[k], full.set[k]);
+});
+
 test('读取其他电脑：不含本机，最近更新的在前，块没到齐先显示已到的', () => {
   const all = {
     ...D.writePlan('devhome', '家里', 2000, [['https://h.com/', 'H']]).set,

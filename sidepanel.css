@@ -85,8 +85,6 @@ img { -webkit-user-drag: none; pointer-events: none; }
   display: flex;
   flex-direction: column;
   height: 100vh;
-  /* 展开：面板先变宽，内容稍后淡入并轻轻滑到位 */
-  transition: opacity 180ms ease 70ms, transform 300ms var(--ease), visibility 0s;
 }
 .top-bar { display: flex; align-items: center; gap: 4px; padding: 10px 10px 2px; }
 .search {
@@ -428,12 +426,13 @@ body.is-dragging .folder-children-wrap, body.is-dragging .tile { transition: non
 .sync-state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
 .sync-state.warn { color: var(--warn); }
 .sync-state.warn::before { background: var(--warn); }
+.sync-state.off::before { background: var(--dim); }
 .status {
   position: fixed;
   left: 10px;
   right: 10px;
   bottom: 46px;
-  z-index: 5;
+  z-index: 13; /* 在设置面板上面：在设置里改了东西，提示要看得见 */
   padding: 9px 12px;
   border-radius: 10px;
   background: var(--menu);
@@ -442,6 +441,20 @@ body.is-dragging .folder-children-wrap, body.is-dragging .tile { transition: non
   line-height: 1.45;
 }
 .status.warn { color: var(--warn); }
+.status:not([hidden]) { display: flex; align-items: center; gap: 10px; }
+.status-text { flex: 1; min-width: 0; }
+.status-act {
+  flex: none;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.status-act:hover { background: var(--accent); color: #fff; }
 
 /* ---------- 设置 ---------- */
 .settings-pop {
@@ -493,6 +506,8 @@ body.is-dragging .folder-children-wrap, body.is-dragging .tile { transition: non
   font-size: 13px;
 }
 .settings-input:focus { box-shadow: 0 0 0 2px var(--accent-soft); }
+.settings-check { display: flex; align-items: flex-start; gap: 8px; padding: 4px; font-size: 13px; line-height: 1.4; cursor: pointer; }
+.settings-check input { flex: none; margin: 2px 0 0; accent-color: var(--accent); }
 .settings-title-gap { margin-top: 14px; }
 .settings-note-tight { margin-top: 4px !important; }
 .settings-note { margin: 10px 4px 0; font-size: 11px; line-height: 1.5; color: var(--muted); }

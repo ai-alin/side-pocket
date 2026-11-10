@@ -19,13 +19,16 @@ export const keyOf = (winId) => 'claims:' + winId;
 
 const tabUrl = (t) => t.url || t.pendingUrl || '';
 
-/** 0 不匹配，2 以它的网址开头，3 网址一样 */
-export function matchScore(savedUrl, url) {
-  const s = normUrl(savedUrl);
-  const t = normUrl(url);
+/** 两边都已经用 normUrl 处理过。0 不匹配，2 以它的网址开头，3 网址一样 */
+function scoreNorm(s, t) {
   if (!s || !t || !/^(https?|file):/i.test(t)) return 0;
   if (s === t) return 3;
   return t.startsWith(s) && '/?&#'.includes(t[s.length]) ? 2 : 0;
+}
+
+/** 0 不匹配，2 以它的网址开头，3 网址一样 */
+export function matchScore(savedUrl, url) {
+  return scoreNorm(normUrl(savedUrl), normUrl(url));
 }
 
 /**
@@ -37,7 +40,10 @@ export function matchScore(savedUrl, url) {
  */
 export function buildIndex(links, winTabs, raw = {}) {
   const byId = new Map(winTabs.map((t) => [t.id, t]));
-  const nodeIds = new Set(links.map((n) => n.id));
+  // 网址只整理一次：收藏和标签多的时候，两两比较时反复解析网址很慢
+  const linkUrl = new Map(links.map((n) => [n.id, normUrl(n.url)]));
+  const tabNorm = new Map(winTabs.map((t) => [t.id, normUrl(tabUrl(t))]));
+  const nodeIds = linkUrl;
   const live = {}; // 节点 id -> 标签 id，只留标签还在这个窗口里的
   const owner = new Map(); // 标签 id -> 节点 id
   for (const [nid, tid] of Object.entries(raw)) {
@@ -50,7 +56,12 @@ export function buildIndex(links, winTabs, raw = {}) {
   for (const t of winTabs) {
     if (owner.has(t.id)) continue;
     let b = 0;
-    for (const n of links) b = Math.max(b, matchScore(n.url, tabUrl(t)));
+    const tu = tabNorm.get(t.id);
+    for (const su of linkUrl.values()) {
+      const sc = scoreNorm(su, tu);
+      if (sc > b) b = sc;
+      if (b === 3) break;
+    }
     if (b) best.set(t.id, b);
   }
   const cache = new Map();
@@ -59,13 +70,13 @@ export function buildIndex(links, winTabs, raw = {}) {
     let r = null;
     if (live[nid] != null) r = { tab: byId.get(live[nid]), own: true };
     else {
-      const n = links.find((x) => x.id === nid);
+      const su = linkUrl.get(nid);
       let pick = null;
       let ps = 0;
-      for (const t of winTabs) {
+      for (const t of su ? winTabs : []) {
         const b = best.get(t.id);
-        if (!b || !n) continue;
-        const sc = matchScore(n.url, tabUrl(t));
+        if (!b) continue;
+        const sc = scoreNorm(su, tabNorm.get(t.id));
         if (sc !== b) continue; // 有别的置顶 / 收藏和它更匹配
         if (sc > ps || (sc === ps && (t.active && !pick.active))) {
           pick = t;

@@ -174,6 +174,63 @@ test('书签：文件夹改名、移动、删除后，颜色跟着走', () => {
   assert.equal(B.carryColors(colors, before, before), null);
 });
 
+test('撤销删除：文件夹连同里面的内容放回原位，颜色记得，新旧 id 对得上', async () => {
+  const bm = mockBm();
+  const ids = await B.resolveRoot(bm, { create: true });
+  const mk = (parentId, title, url) => bm.create({ parentId, title, url });
+  await mk(ids.root, 'A', 'https://a.test/');
+  const work = await mk(ids.root, '工作');
+  await mk(ids.root, 'Z', 'https://z.test/');
+  await mk(work.id, 'W1', 'https://w1.test/');
+  const sub = await mk(work.id, '文档');
+  await mk(sub.id, 'D1', 'https://d1.test/');
+  await mk(work.id, 'W2', 'https://w2.test/');
+  const colors = { 工作: 'green', '工作/文档': 'blue', 别的: 'red' };
+  let { nodes } = await load(bm, ids, { colors });
+  const wid = idOf(nodes, '工作');
+
+  const snap = await B.snapshot(bm, nodes, wid, colors);
+  assert.deepEqual(snap.colors, { 工作: 'green', '工作/文档': 'blue' });
+  assert.equal(snap.ids.length, 5);
+  await B.removeSaved(bm, nodes, wid);
+  assert.deepEqual(bm.titles(ids.root), ['置顶', 'A', 'Z']);
+
+  const r = await B.restore(bm, ids, JSON.parse(JSON.stringify(snap))); // 快照会存进 storage，得经得起序列化
+  assert.equal(r.inPlace, true);
+  assert.deepEqual(bm.titles(ids.root), ['置顶', 'A', '工作', 'Z']);
+  ({ nodes } = await load(bm, ids, { colors }));
+  const v = M.view({ nodes });
+  const nw = idOf(nodes, '工作');
+  assert.deepEqual(titles(nodes, v, nw), ['W1', '文档', 'W2']);
+  assert.deepEqual(titles(nodes, v, idOf(nodes, '文档')), ['D1']);
+  assert.equal(nodes[idOf(nodes, 'D1')].url, 'https://d1.test/');
+  assert.equal(r.map[B.toBid(wid)], B.toBid(nw));
+  assert.equal(r.map[sub.id], B.toBid(idOf(nodes, '文档')));
+  assert.equal(Object.keys(r.map).length, 5);
+});
+
+test('撤销删除：单个网址放回原位；原来的文件夹也没了就放到收藏顶层', async () => {
+  const bm = mockBm();
+  const ids = await B.resolveRoot(bm, { create: true });
+  const f = await bm.create({ parentId: ids.root, title: '夹' });
+  await bm.create({ parentId: f.id, title: 'X', url: 'https://x.test/' });
+  await bm.create({ parentId: f.id, title: 'Y', url: 'https://y.test/' });
+  await bm.create({ parentId: f.id, title: 'Z', url: 'https://z.test/' });
+  let { nodes } = await load(bm, ids);
+  const snap = await B.snapshot(bm, nodes, idOf(nodes, 'Y'));
+  await B.removeSaved(bm, nodes, idOf(nodes, 'Y'));
+  assert.deepEqual(bm.titles(f.id), ['X', 'Z']);
+  assert.equal((await B.restore(bm, ids, snap)).inPlace, true);
+  assert.deepEqual(bm.titles(f.id), ['X', 'Y', 'Z']);
+
+  ({ nodes } = await load(bm, ids));
+  const snap2 = await B.snapshot(bm, nodes, idOf(nodes, 'Z'));
+  await bm.removeTree(f.id); // 删完以后，它原来所在的文件夹也被删了
+  const r = await B.restore(bm, ids, snap2);
+  assert.equal(r.inPlace, false);
+  assert.deepEqual(bm.titles(ids.root), ['置顶', 'Z']);
+});
+
 test('迁移：旧的收藏和置顶写进书签，重复执行不会重复', async () => {
   const bm = mockBm();
   const ids = await B.resolveRoot(bm, { create: true });

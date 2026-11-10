@@ -131,15 +131,22 @@ async function copyText(text) {
 }
 
 let statusTimer;
-function showStatus(text, kind = 'info', ms = 0) {
+/** action：{ label, run }，提示右边加一个按钮（比如「撤销」） */
+function showStatus(text, kind = 'info', ms = 0, action = null) {
   const s = $('#status');
   clearTimeout(statusTimer);
-  s.textContent = text;
+  s.replaceChildren(el('span', { class: 'status-text' }, text));
+  if (action) {
+    s.append(
+      el('button', { type: 'button', class: 'status-act', onclick: () => { s.hidden = true; action.run(); } }, action.label),
+    );
+  }
   s.className = 'status' + (kind === 'warn' ? ' warn' : '');
   s.hidden = false;
   if (ms) statusTimer = setTimeout(() => (s.hidden = true), ms);
 }
 
+const SYNC_OFF_TIP = '这台电脑开着的网页不会同步到其他电脑（可以在设置里打开）；置顶和收藏存在 Chrome 书签里，不受影响';
 const SYNC_MSG = {
   quota: '同步空间不够，这台电脑的网页只同步了一部分。可以在「其他电脑」里移除不再用的旧设备。',
   rate: '写入太频繁，被 Chrome 限流，稍后自动重试。',
@@ -149,9 +156,10 @@ const SYNC_MSG = {
 function showSync(st) {
   if (!st) return;
   const badge = $('#sync-state');
-  badge.textContent = SYNC_MSG[st] ? '未同步' : '已同步';
+  badge.textContent = st === 'off' ? '未开启同步' : SYNC_MSG[st] ? '未同步' : '已同步';
   badge.classList.toggle('warn', !!SYNC_MSG[st]);
-  badge.title = SYNC_MSG[st] || '这台电脑开着的网页已同步到你的 Google 账号；置顶和收藏存在 Chrome 书签里';
+  badge.classList.toggle('off', st === 'off');
+  badge.title = st === 'off' ? SYNC_OFF_TIP : SYNC_MSG[st] || '这台电脑开着的网页已同步到你的 Google 账号；置顶和收藏存在 Chrome 书签里';
   if (st === syncStatus) return;
   syncStatus = st;
   if (SYNC_MSG[st]) showStatus(SYNC_MSG[st], 'warn', 8000);
@@ -192,6 +200,21 @@ async function resolveWindowId() {
   return null;
 }
 
+/** 这个窗口的标签，和它们的认领记录 */
+async function loadTabs() {
+  const key = C.keyOf(winId);
+  const [all, s] = await Promise.all([chrome.tabs.query({}), chrome.storage.session.get(key)]);
+  tabs = all.filter((t) => !isSelf(t));
+  winTabs = tabs.filter((t) => t.windowId === winId).sort((a, b) => a.index - b.index);
+  winUrls = new Set(winTabs.map((t) => M.normUrl(tabUrl(t))));
+  claimsRaw = s[key] || {};
+}
+
+// 哪几块数据变了，下次刷新只重新读这几块：标签一直在变，不用每次都重读书签和其他电脑的清单
+const PARTS = ['tabs', 'saved', 'devices'];
+const dirty = new Set(PARTS);
+const LOADERS = { tabs: loadTabs, saved: loadSaved, devices: loadDevices };
+
 /** force：侧栏暂时看不见时也刷新（第一次加载） */
 async function refresh({ force = false } = {}) {
   if (inflight || (document.hidden && !force)) {
@@ -199,18 +222,22 @@ async function refresh({ force = false } = {}) {
     return;
   }
   stale = false;
-  const [all, , , wid] = await Promise.all([chrome.tabs.query({}), loadSaved(), loadDevices(), winId ?? resolveWindowId()]);
-  winId = wid;
-  tabs = all.filter((t) => !isSelf(t));
-  winTabs = tabs.filter((t) => t.windowId === winId).sort((a, b) => a.index - b.index);
-  winUrls = new Set(winTabs.map((t) => M.normUrl(tabUrl(t))));
-  claimsRaw = (await chrome.storage.session.get(C.keyOf(winId)))[C.keyOf(winId)] || {};
-  buildIdx();
+  const need = [...dirty];
+  dirty.clear();
+  try {
+    if (winId == null) winId = await resolveWindowId();
+    await Promise.all(need.map((k) => LOADERS[k]()));
+  } catch (e) {
+    need.forEach((k) => dirty.add(k)); // 没读成的下次再读
+    throw e;
+  }
   render();
 }
 
 let refreshTimer;
-function refreshSoon(ms = 60) {
+/** parts：哪几块变了（'tabs' | 'saved' | 'devices'），不给就是全部 */
+function refreshSoon(parts = PARTS, ms = 60) {
+  for (const k of [].concat(parts)) dirty.add(k);
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(refresh, ms);
 }
@@ -234,7 +261,10 @@ async function op(name, args = {}) {
     return null;
   } finally {
     inflight--;
-    if (!inflight) refresh();
+    if (!inflight) {
+      PARTS.forEach((k) => dirty.add(k));
+      refresh();
+    }
   }
 }
 
@@ -243,8 +273,15 @@ function buildIdx() {
   idx = C.buildIndex(links, winTabs, claimsRaw);
 }
 
-/** 记下「这个标签归这个置顶 / 收藏」 */
+/** 记下「这个标签归这个置顶 / 收藏」。由后台排队写，和后台自己处理的标签事件不会互相盖掉 */
 async function claimTab(nid, tid) {
+  claimsRaw = C.claim(claimsRaw, nid, tid);
+  const r = await chrome.runtime.sendMessage({ type: 'side-pocket:claim', winId, nid, tid }).catch(() => null);
+  if (r?.ok && r.result) {
+    claimsRaw = r.result;
+    return;
+  }
+  // 后台没接住：自己写
   const key = C.keyOf(winId);
   const cur = (await chrome.storage.session.get(key))[key] || {};
   claimsRaw = C.claim(cur, nid, tid);
@@ -260,7 +297,7 @@ async function openSaved(n) {
   if (r) {
     if (!r.own) await claimTab(n.id, r.tab.id);
     if (!r.tab.active) await activateTab(r.tab);
-    else refreshSoon();
+    else refreshSoon('tabs');
     return;
   }
   const t = await chrome.tabs.create({ url: n.url, windowId: winId ?? undefined, active: true });
@@ -307,6 +344,23 @@ async function newFolder(parent = M.ROOT, index) {
 function startRename(id) {
   renaming = id;
   render();
+}
+
+/** 删除置顶 / 收藏 / 文件夹，删完给几秒钟可以撤销 */
+async function removeSaved(id) {
+  const n = state.nodes[id];
+  if (!n) return;
+  const count = n.type === 'folder' ? M.countDescendants(v, id) : 0;
+  const what = n.type === 'folder' ? `文件夹「${displayTitle(n)}」${count ? `（含 ${count} 项）` : ''}` : `「${displayTitle(n)}」`;
+  const ok = await op('remove', { id });
+  if (!ok) return;
+  showStatus(`已删除${what}`, 'info', 8000, {
+    label: '撤销',
+    run: async () => {
+      const back = await op('undoRemove');
+      if (!back) showStatus('撤销不了了，这一项已经删掉', 'warn', 3000);
+    },
+  });
 }
 
 /* ---------- 渲染 ---------- */
@@ -524,7 +578,7 @@ function tabRow(t) {
   return el(
     'div',
     {
-      class: 'row tab open' + (t.active ? ' active' : '') + (t.pinned ? ' chrome-pinned' : '') + (owner ? ' claimed' : ''),
+      class: 'row tab open' + (t.active ? ' active' : ''),
       draggable: 'true',
       'data-tab': String(t.id),
       title: owner ? `${url}\n属于${v.parent[owner.id] === M.PINNED ? '置顶' : '收藏'}「${displayTitle(owner)}」` : url,
@@ -702,7 +756,7 @@ function nodeMenu(id) {
       { heading: '颜色' },
       { colors: id },
       '-',
-      { label: count ? `删除文件夹（含 ${count} 项）` : '删除文件夹', danger: true, run: () => op('remove', { id }) },
+      { label: count ? `删除文件夹（含 ${count} 项）` : '删除文件夹', danger: true, run: () => removeSaved(id) },
     ];
   }
   const r = savedTab(n);
@@ -716,7 +770,7 @@ function nodeMenu(id) {
   ];
   if (parent !== M.PINNED) items.push({ label: '新建文件夹', run: () => newFolder(parent, after()) });
   if (r) items.push({ label: '关闭标签', run: () => chrome.tabs.remove(r.tab.id) });
-  items.push('-', { label: '删除', danger: true, run: () => op('remove', { id }) });
+  items.push('-', { label: '删除', danger: true, run: () => removeSaved(id) });
   return items.filter(Boolean);
 }
 
@@ -1061,22 +1115,23 @@ document.addEventListener('dragend', () => {
 /* ---------- 监听 ---------- */
 
 for (const ev of ['onCreated', 'onRemoved', 'onUpdated', 'onActivated', 'onMoved', 'onAttached', 'onDetached', 'onReplaced']) {
-  chrome.tabs[ev].addListener(() => refreshSoon());
+  chrome.tabs[ev].addListener(() => refreshSoon('tabs'));
 }
 
 // 书签变了（包括在 Chrome 书签管理器里改的、从别的电脑同步来的）
 for (const ev of ['onCreated', 'onRemoved', 'onChanged', 'onMoved', 'onChildrenReordered', 'onImportEnded']) {
-  chrome.bookmarks[ev]?.addListener(() => refreshSoon());
+  chrome.bookmarks[ev]?.addListener(() => refreshSoon('saved'));
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
   const keys = Object.keys(changes);
-  if (area === 'sync' && keys.some((k) => k === B.COLOR_KEY || k.startsWith(D.META) || k.startsWith(D.CHUNK))) refreshSoon(150);
-  if (area === 'local' && changes[B.COLLAPSE_KEY]) refreshSoon();
+  if (area === 'sync' && keys.includes(B.COLOR_KEY)) refreshSoon('saved', 150);
+  if (area === 'sync' && keys.some((k) => k.startsWith(D.META) || k.startsWith(D.CHUNK))) refreshSoon('devices', 150);
+  if (area === 'local' && changes[B.COLLAPSE_KEY]) refreshSoon('saved');
 });
 
 chrome.storage.session.onChanged.addListener((changes) => {
-  if (winId != null && changes[C.keyOf(winId)]) refreshSoon(30);
+  if (winId != null && changes[C.keyOf(winId)]) refreshSoon('tabs', 30);
   if (changes[D.VIEW_KEY]) showSync(changes[D.VIEW_KEY].newValue?.status);
 });
 
@@ -1104,6 +1159,7 @@ async function refreshSettingsUi() {
   $('#shortcut-hint').hidden = !!key;
   const input = $('#device-name');
   if (document.activeElement !== input && info?.ok) input.value = info.result.name;
+  if (info?.ok) $('#share-tabs').checked = info.result.share !== false;
 }
 
 /** 关闭 Chrome 侧边栏（Chrome 标题栏上的 ✕、再按一次快捷键也可以） */
@@ -1153,6 +1209,18 @@ function setupChromeUi() {
     e.stopPropagation();
   });
   nameInput.addEventListener('blur', saveName);
+
+  // 关掉后：这台电脑开着的网页不再上传，已经上传的清单从同步存储里删掉；别的电脑的清单照常能看
+  const share = $('#share-tabs');
+  share.addEventListener('change', async () => {
+    const on = share.checked;
+    const r = await chrome.runtime.sendMessage({ type: 'side-pocket:op', op: 'setShare', args: { on } }).catch(() => null);
+    if (!r?.ok) {
+      share.checked = !on;
+      return showStatus('没改成：' + (r?.error || '后台没有响应'), 'warn', 3000);
+    }
+    showStatus(on ? '已打开：这台电脑开着的网页会出现在你其他电脑的侧栏里' : '已关闭：这台电脑的网页清单已从同步里删掉', 'info', 3500);
+  });
 
   // 从设置页改完回来，侧栏重新拿到焦点时更新显示
   window.addEventListener('focus', () => !pop.hidden && refreshSettingsUi());
