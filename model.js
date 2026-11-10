@@ -44,6 +44,19 @@ export function normUrl(u) {
 
 const clip = (str) => String(str ?? '').slice(0, MAX_TITLE);
 
+/**
+ * 存成置顶 / 收藏时去掉标题里的未读数：「(3) 首页」「Inbox (479) - a@b.com - Gmail」。
+ * 这个数字一直在变，存下来就过期了。年份（「电影 (2024) - 豆瓣」）不动。
+ */
+export function cleanTitle(title) {
+  const s = String(title ?? '');
+  const out = s
+    .replace(/^\s*[(\[（【]\d{1,5}\+?[)\]）】]\s*/, '')
+    .replace(/^([^()（）]{1,40}?)\s*[(（](?!(?:19|20)\d\d[)）])\d{1,3}(?:,?\d{3})*\+?[)）](?=\s+[-–—|·]\s)/, '$1')
+    .trim();
+  return out || s;
+}
+
 /* ---------- 推导视图 ---------- */
 
 /**

@@ -161,6 +161,14 @@ img { -webkit-user-drag: none; pointer-events: none; }
   color: var(--muted);
 }
 .sec-head .num { font-weight: 400; font-variant-numeric: tabular-nums; }
+/* 区块标题：点一下折叠 / 展开这个区块。箭头平时不显示，鼠标移上去或折叠着的时候才有 */
+.sec-head[data-sec] { margin: 14px 0 2px; padding: 4px 8px; border-radius: var(--r); cursor: pointer; }
+.sec-head[data-sec]:hover { color: var(--fg); }
+.sec-caret { width: 12px; height: 12px; opacity: 0; transform: rotate(90deg); transition: transform 200ms var(--ease), opacity 120ms ease; }
+.sec-caret svg { width: 12px; height: 12px; }
+.sec-head:hover .sec-caret, .sec-head:focus-visible .sec-caret, .sec-collapsed .sec-caret { opacity: 1; }
+.sec-collapsed .sec-caret { transform: none; }
+.section.sec-collapsed > :not(.sec-head) { display: none; }
 .sec-act {
   margin-left: auto;
   padding: 2px 8px;
@@ -343,7 +351,11 @@ img { -webkit-user-drag: none; pointer-events: none; }
   margin: 3px 0;
   border-radius: 10px;
   background: var(--base);
+  --dim: var(--muted); /* 色块上面没打开的灰字加深一档，保证看得清 */
 }
+/* 色块底部留一点空，最后一行不贴着圆角（放在子容器里面：折叠时跟着一起收起来） */
+.folder-well.tinted > .folder-children-wrap > .folder-children::after { content: ""; display: block; height: 4px; }
+.folder-well.tinted > .folder-children-wrap > .folder-children::before { bottom: 6px; }
 .folder-children-wrap {
   display: grid;
   grid-template-rows: 1fr;

@@ -80,3 +80,16 @@ test('normUrl：忽略 #hash 和末尾斜杠', () => {
   assert.equal(M.normUrl('https://a.com/x/#top'), 'https://a.com/x');
   assert.equal(M.normUrl('https://a.com'), M.normUrl('https://a.com/'));
 });
+
+test('cleanTitle：去掉标题里的未读数，年份和普通标题不动', () => {
+  assert.equal(M.cleanTitle('Inbox (479) - me@example.com - Gmail'), 'Inbox - me@example.com - Gmail');
+  assert.equal(M.cleanTitle('收件箱 (1,204) - Gmail'), '收件箱 - Gmail');
+  assert.equal(M.cleanTitle('(3) 首页 / X'), '首页 / X');
+  assert.equal(M.cleanTitle('[12] 消息'), '消息');
+  assert.equal(M.cleanTitle('（99+）飞书'), '飞书');
+  assert.equal(M.cleanTitle('沙丘 (2024) - 豆瓣电影'), '沙丘 (2024) - 豆瓣电影');
+  assert.equal(M.cleanTitle('f(x) 的用法 (2) - 文档'), 'f(x) 的用法 (2) - 文档');
+  assert.equal(M.cleanTitle('GitLab'), 'GitLab');
+  assert.equal(M.cleanTitle('(5)'), '(5)');
+  assert.equal(M.cleanTitle(undefined), '');
+});

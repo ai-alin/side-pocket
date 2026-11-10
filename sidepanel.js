@@ -13,6 +13,7 @@ import * as C from './claims.js';
 const $ = (sel) => document.querySelector(sel);
 const SELF_PREFIX = chrome.runtime.getURL('');
 const DEV_COLLAPSE_KEY = 'ui.deviceCollapsed'; // storage.local：{ 设备 id: true }
+const SEC_KEY = 'ui.sectionCollapsed'; // storage.local：{ pinned | saved | window | devices: true }，折叠着的区块
 
 let state = M.emptyState(); // 置顶和收藏
 let v = M.view(state);
@@ -326,7 +327,7 @@ async function activateTab(t) {
 /** 把一个网页存进收藏 / 置顶（已收藏过的网址会挪过去，不重复建） */
 function saveUrl(url, title, parent = M.ROOT, index) {
   if (!/^(https?|file|ftp|chrome):/i.test(url || '')) return showStatus('这个网页不能收藏', 'warn', 2500);
-  return op('saveTab', { url, title, parent, index });
+  return op('saveTab', { url, title: M.cleanTitle(title), parent, index });
 }
 
 /** 新建文件夹并进入重命名。文件夹建在书签里，真正的 id 由后台返回，先用临时 id 显示 */
@@ -455,7 +456,75 @@ function patchChildren(parent, next) {
   while (parent.childNodes.length > out.length) parent.lastChild.remove();
 }
 
-const favImg = (url, cls, size) => el('img', { class: cls, src: favicon(url, size), alt: '', draggable: 'false' });
+/* ---------- 没有图标的网站：用标题第一个字做图标 ---------- */
+// Chrome 没存过图标的网站（内网系统、没打开过的网页）给的都是同一个地球，一排地球分不清谁是谁。
+// 把图标画出来和「默认地球」逐像素比较，一样的就换成「色块 + 标题第一个字」。
+
+const blank = new Map(); // 图标地址 -> true（是默认地球）| false
+const blankSig = new Map(); // 尺寸 -> 默认地球的像素
+const checking = new Set();
+const LETTER_COLORS = ['#5F6368', '#1A73E8', '#C5221F', '#B06000', '#188038', '#B80672', '#8430CE', '#007B83'];
+
+async function pixels(src) {
+  const img = new Image();
+  img.src = src;
+  await img.decode();
+  const ctx = new OffscreenCanvas(16, 16).getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, 16, 16);
+  return ctx.getImageData(0, 0, 16, 16).data.join();
+}
+
+let letterTimer;
+async function checkBlank(src, size) {
+  if (checking.has(src)) return;
+  checking.add(src);
+  try {
+    if (!blankSig.has(size)) blankSig.set(size, pixels(favicon('http://no-such-site.side-pocket.invalid/', size)));
+    const [mine, none] = await Promise.all([pixels(src), blankSig.get(size)]);
+    blank.set(src, mine === none);
+    if (mine === none) {
+      clearTimeout(letterTimer);
+      letterTimer = setTimeout(() => !drag && render(), 50);
+    }
+  } catch {
+    blank.set(src, false); // 比不了就照常用 Chrome 给的图标
+  } finally {
+    checking.delete(src);
+  }
+}
+
+const letterIcons = new Map();
+function letterIcon(title, host) {
+  const ch = ((title || '').match(/[\p{L}\p{N}]/u)?.[0] || host.replace(/^www\./, '')[0] || '?').toUpperCase();
+  let h = 0;
+  for (const c of host) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const key = ch + h;
+  if (!letterIcons.has(key)) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="${LETTER_COLORS[h % LETTER_COLORS.length]}"/><text x="16" y="22.5" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif" font-size="18" font-weight="500" fill="#fff">${ch.replace(/[<&]/g, '')}</text></svg>`;
+    letterIcons.set(key, 'data:image/svg+xml,' + encodeURIComponent(svg));
+  }
+  return letterIcons.get(key);
+}
+
+function favImg(url, cls, size = 32, title = '') {
+  let src = favicon(url, size);
+  if (/^(https?|file):/i.test(url || '')) {
+    if (blank.get(src)) src = letterIcon(title, hostOf(url));
+    else if (!blank.has(src)) checkBlank(src, size);
+  }
+  return el('img', { class: cls, src, alt: '', draggable: 'false' });
+}
+
+// 网站的图标到了（第一次打开的网页）：重新比一次
+chrome.tabs.onUpdated.addListener((_id, info, tab) => {
+  if (info.favIconUrl) for (const size of [32, 64]) blank.delete(favicon(tab.url, size));
+});
+// 浅色 / 深色切换后 Chrome 的默认地球可能换颜色：全部重新比
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  blank.clear();
+  blankSig.clear();
+  render();
+});
 
 function renderPinned() {
   patchChildren(
@@ -465,7 +534,7 @@ function renderPinned() {
       return el(
         'div',
         { class: 'tile' + openCls(n), title: savedTip(n) === n.url ? displayTitle(n) : `${displayTitle(n)}\n现在：${tabTitle(savedTab(n).tab)}`, draggable: 'true', 'data-id': id, role: 'button', tabindex: '0' },
-        favImg(n.url, '', 64),
+        favImg(n.url, '', 64, displayTitle(n)),
         el('span', { class: 'tile-label' }, displayTitle(n)),
       );
     }),
@@ -538,7 +607,7 @@ function linkRow(n) {
   return el(
     'div',
     { class: 'row link' + openCls(n), draggable: 'true', 'data-id': n.id, title: savedTip(n) },
-    favImg(n.url, 'fav'),
+    favImg(n.url, 'fav', 32, displayTitle(n)),
     titleNode(n),
     el(
       'span',
@@ -585,7 +654,7 @@ function tabRow(t) {
       'data-tab': String(t.id),
       title: owner ? `${url}\n属于${v.parent[owner.id] === M.PINNED ? '置顶' : '收藏'}「${displayTitle(owner)}」` : url,
     },
-    favImg(url, 'fav'),
+    favImg(url, 'fav', 32, tabTitle(t)),
     owner ? svgIcon(SVG.pin, 'claim-ico') : null,
     el('span', { class: 'title' }, tabTitle(t)),
     el(
@@ -620,7 +689,7 @@ function remoteRow(dev, i) {
   return el(
     'div',
     { class: 'row remote' + (open ? ' local-open' : ''), draggable: 'true', 'data-remote': `${dev.id}|${i}`, title: t.url },
-    favImg(t.url, 'fav'),
+    favImg(t.url, 'fav', 32, t.title),
     el('span', { class: 'title' }, t.title || hostOf(t.url)),
     open ? el('span', { class: 'tag' }, '已开着') : null,
     el('span', { class: 'actions' }, actBtn('save', '收藏', SVG.save), actBtn('pin', '置顶', SVG.pin)),
@@ -688,7 +757,7 @@ function renderResults() {
     el(
       'div',
       { class: 'row link' + (r.rank === 1 ? openCls(state.nodes[r.attr['data-id']]) : r.rank === 2 && winUrls.has(M.normUrl(r.url)) ? ' open' : '') + (i === selected ? ' selected' : ''), title: r.url, ...r.attr },
-      favImg(r.url, 'fav'),
+      favImg(r.url, 'fav', 32, r.title),
       el('span', { class: 'title' }, r.title),
       el('span', { class: 'where' }, r.where),
     ),
@@ -856,6 +925,8 @@ document.addEventListener('click', (e) => {
   if (!e.target.closest('#menu')) hideMenu();
   if (e.target.closest('input.rename, #settings-pop')) return;
   if (e.target.closest('#new-folder')) return newFolder();
+  const head = e.target.closest('.sec-head[data-sec]');
+  if (head) return toggleSection(head.dataset.sec);
   if (e.target.closest('#new-tab')) return chrome.tabs.create({ windowId: winId ?? undefined });
   const t = targetOf(e);
   if (!t.kind) return;
@@ -901,7 +972,33 @@ document.addEventListener('contextmenu', (e) => {
   else hideMenu();
 });
 
-document.addEventListener('keydown', (e) => e.key === 'Escape' && hideMenu());
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') return hideMenu();
+  // 键盘：聚焦在置顶格子、区块标题上按回车或空格，和点击一样
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('.tile, .sec-head[data-sec]')) {
+    e.preventDefault();
+    e.target.click();
+  }
+});
+
+/* ---------- 区块折叠 ---------- */
+
+let secCollapsed = {};
+
+function applySections() {
+  for (const h of document.querySelectorAll('.sec-head[data-sec]')) {
+    const off = !!secCollapsed[h.dataset.sec];
+    h.closest('.section').classList.toggle('sec-collapsed', off);
+    h.setAttribute('aria-expanded', String(!off));
+  }
+}
+
+function toggleSection(key) {
+  secCollapsed = { ...secCollapsed, [key]: !secCollapsed[key] };
+  if (!secCollapsed[key]) delete secCollapsed[key];
+  chrome.storage.local.set({ [SEC_KEY]: secCollapsed });
+  applySections();
+}
 
 /** 搜索结果里按回车 */
 function openResult(r) {
@@ -1140,6 +1237,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'sync' && keys.includes(B.COLOR_KEY)) refreshSoon('saved', 150);
   if (area === 'sync' && keys.some((k) => k.startsWith(D.META) || k.startsWith(D.CHUNK))) refreshSoon('devices', 150);
   if (area === 'local' && changes[B.COLLAPSE_KEY]) refreshSoon('saved');
+  if (area === 'local' && changes[SEC_KEY]) {
+    secCollapsed = changes[SEC_KEY].newValue || {};
+    applySections();
+  }
 });
 
 chrome.storage.session.onChanged.addListener((changes) => {
@@ -1234,6 +1335,8 @@ function setupChromeUi() {
 
 async function init() {
   setupChromeUi();
+  secCollapsed = (await chrome.storage.local.get(SEC_KEY))[SEC_KEY] || {};
+  applySections();
   const s = await chrome.storage.session.get(D.VIEW_KEY);
   showSync(s[D.VIEW_KEY]?.status);
   await refresh({ force: true });

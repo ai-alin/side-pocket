@@ -250,6 +250,17 @@ check('里面没设颜色的子文件夹：自己不铺底，图标也不跟着�
 await sendOp('remove', { id: plain });
 await sleep(600);
 check('置顶格子下面显示标题', (await panel.locator('#pinned .tile .tile-label').first().textContent()).length > 0, await panel.locator('#pinned .tile').first().innerHTML());
+const letter = await until(async () => (await panel.locator('#pinned .tile img').first().getAttribute('src')).startsWith('data:image/svg'), 5000);
+const chromeIcons = await panel.locator('#tabs .row.tab img.fav').evaluateAll((xs) => xs.map((x) => [x.closest('.row').title, x.getAttribute('src')]).filter(([u]) => !/^https?:/.test(u)));
+check('没有图标的网站：用「色块 + 标题第一个字」代替一排地球；Chrome 自己的页面照常', !!letter && chromeIcons.every(([, src]) => src.includes('/_favicon/')), JSON.stringify(chromeIcons));
+await panel.locator('#devices-section .sec-head').click();
+await sleep(300);
+const secOff = await panel.evaluate(async () => [document.querySelector('#devices').offsetParent === null, document.querySelector('#devices-section .sec-head').getAttribute('aria-expanded'), (await chrome.storage.local.get('ui.sectionCollapsed'))['ui.sectionCollapsed']]);
+check('点区块标题：折叠这个区块，并且记住', secOff[0] && secOff[1] === 'false' && secOff[2]?.devices === true, JSON.stringify(secOff));
+await panel.locator('#devices-section .sec-head').focus();
+await panel.keyboard.press('Enter');
+await sleep(300);
+check('键盘：聚焦区块标题按回车展开', await panel.evaluate(() => document.querySelector('#devices').offsetParent !== null && document.querySelector('#devices-section .sec-head').getAttribute('aria-expanded') === 'true'));
 
 console.log('删除后可以撤销');
 await sendOp('saveTab', { url: 'http://site.test/in-folder', title: '文件夹里的网页', parent: fid });
@@ -331,6 +342,14 @@ await panel.locator('#menu button', { hasText: '回到原网址' }).click();
 await sleep(1200);
 w1 = await winInfo();
 check('右键「回到原网址」：A2 回到置顶的网址', w1.urls[a2] === 'http://site.test/pinA' && w1.n === w0.n, JSON.stringify(w1));
+
+await sw.evaluate(async (w) => { const t = (await chrome.tabs.query({ windowId: w })).find((x) => (x.url || '').includes('/sidepanel.html')); await chrome.tabs.update(t.id, { active: true }); }, panelWin);
+await panel.bringToFront(); await sleep(600);
+await tile.focus();
+await panel.keyboard.press('Enter');
+await sleep(1200);
+w1 = await winInfo();
+check('键盘：聚焦置顶按回车，和点击一样切到它的标签', w1.active === a2 && w1.n === w0.n, JSON.stringify([w1, a2]));
 
 console.log('两个窗口各自独立');
 const p2Promise = ctx.waitForEvent('page');
