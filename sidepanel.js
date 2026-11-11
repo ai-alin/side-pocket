@@ -319,10 +319,86 @@ async function activateTab(t) {
   await chrome.tabs.update(t.id, { active: true });
 }
 
-/** 把一个网页存进收藏 / 置顶（已收藏过的网址会挪过去，不重复建） */
-function saveUrl(url, title, parent = M.ROOT, index) {
-  if (!/^(https?|file|ftp|chrome):/i.test(url || '')) return showStatus(tr('cantSave'), 'warn', 2500);
-  return op('saveTab', { url, title: M.cleanTitle(title), parent, index });
+const LAST_FOLDER_KEY = 'ui.lastFolder'; // storage.local：上次收藏进去的文件夹节点 id
+let lastFolder = null;
+const savable = (url) => /^(https?|file|ftp|chrome):/i.test(url || '');
+
+/** 已经收藏 / 置顶过这个网址的那一条 */
+function findSaved(url) {
+  const u = M.normUrl(url);
+  return Object.values(state.nodes).find((n) => n.type === 'link' && M.normUrl(n.url) === u) || null;
+}
+
+const placeName = (p) => (p === M.PINNED ? tr('secPinned') : p === M.ROOT ? tr('secSaved') : state.nodes[p]?.title || '');
+
+/**
+ * 把一个网页存进收藏 / 置顶，存完在底部提示存到了哪。已收藏过的网址会挪过去，不重复建，并提示从哪挪到了哪。
+ * quiet：拖拽时用——放在哪是自己拖的，不用提示；但把别处已有的那一条挪过来了还是要说。
+ */
+async function saveUrl(url, title, parent = M.ROOT, index, quiet = false) {
+  if (!savable(url)) return showStatus(tr('cantSave'), 'warn', 2500);
+  const exist = findSaved(url);
+  const from = exist ? v.parent[exist.id] : null;
+  const to = placeName(parent);
+  if (exist && from === parent && index == null) {
+    if (!quiet) showStatus(parent === M.PINNED ? tr('alreadyPinned') : tr('alreadyIn', to), 'info', 2500);
+    return true;
+  }
+  const fromName = exist ? placeName(from) : '';
+  const name = exist ? displayTitle(exist) : M.cleanTitle(title) || hostOf(url);
+  const r = exist ? await op('move', { id: exist.id, parent, index }) : await op('saveTab', { url, title: M.cleanTitle(title), parent, index });
+  if (!r) return r;
+  if (parent !== M.ROOT && parent !== M.PINNED) {
+    lastFolder = parent;
+    chrome.storage.local.set({ [LAST_FOLDER_KEY]: parent });
+  }
+  if (exist && from !== parent) showStatus(tr('movedTo', fromName, to), 'info', 3000);
+  else if (!quiet) showStatus(parent === M.PINNED ? tr('pinnedOk', name) : parent === M.ROOT ? tr('savedTop') : tr('savedTo', to), 'info', 2500);
+  return r;
+}
+
+/** 点「收藏」时弹出的菜单：顶层、所有文件夹（按层级缩进）、新建文件夹。一个文件夹都没有时返回 null */
+function savePicker(url, title) {
+  const exist = findSaved(url);
+  const cur = exist ? v.parent[exist.id] : null;
+  const item = (id, label, depth = 0) => {
+    const n = state.nodes[id];
+    return { pick: true, icon: n ? SVG.folder : SVG.save, color: n?.color, depth, label, current: cur === id, run: () => saveUrl(url, title, id) };
+  };
+  const folders = [];
+  const walk = (parent, depth) => {
+    for (const id of v.order[parent]) {
+      if (state.nodes[id].type !== 'folder') continue;
+      folders.push(item(id, state.nodes[id].title, depth));
+      walk(id, depth + 1);
+    }
+  };
+  walk(M.ROOT, 0);
+  if (!folders.length) return null;
+  const items = [{ heading: tr('saveTo') }];
+  // 上次用过的文件夹排在最前面
+  const last = state.nodes[lastFolder];
+  if (last?.type === 'folder' && folders.length > 1) items.push(item(last.id, (last.path || last.title).split('/').join(' / ')), '-');
+  items.push(item(M.ROOT, tr('saveTop')), ...folders, '-', {
+    pick: true,
+    icon: SVG.folder,
+    label: tr('newFolderDots'),
+    run: async () => {
+      const id = await newFolder();
+      // 新文件夹要等重新读过书签才在本地有：等到了再往里存
+      for (let i = 0; id && i < 40 && !state.nodes[id]; i++) await new Promise((r) => setTimeout(r, 50));
+      if (id && state.nodes[id]) saveUrl(url, title, id);
+    },
+  });
+  return items;
+}
+
+/** 点「收藏」：有文件夹就让人选放哪，没有就直接放顶层。show(菜单项) 负责把菜单显示在合适的位置 */
+function pickSave(url, title, show) {
+  if (!savable(url)) return showStatus(tr('cantSave'), 'warn', 2500);
+  const items = savePicker(url, title);
+  if (!items) return saveUrl(url, title);
+  show(items);
 }
 
 /** 新建文件夹并进入重命名。文件夹建在书签里，真正的 id 由后台返回，先用临时 id 显示 */
@@ -335,6 +411,7 @@ async function newFolder(parent = M.ROOT, index) {
     renaming = typeof id === 'string' ? id : null;
     render();
   }
+  return typeof id === 'string' ? id : null;
 }
 
 function startRename(id) {
@@ -793,14 +870,27 @@ function setQuery(q) {
 
 /* ---------- 菜单 ---------- */
 
+let lastMenu = { x: 0, y: 0, row: null }; // 上一个菜单的位置：菜单里点「收藏」后，选文件夹的菜单显示在同一个地方
+const reshow = (items) => showMenu(lastMenu.x, lastMenu.y, items, lastMenu.row);
+
 function showMenu(x, y, entries, row) {
+  lastMenu = { x, y, row };
   const m = $('#menu');
   m.replaceChildren(
     ...entries.map((e) => {
       if (e === '-') return el('hr');
       if (e.heading) return el('div', { class: 'menu-label' }, e.heading);
       if (e.colors) return colorPicker(e.colors);
-      return el('button', { type: 'button', class: e.danger ? 'danger' : '', onclick: () => { hideMenu(); e.run(); } }, e.label);
+      const onclick = () => { hideMenu(); e.run(); };
+      if (!e.pick) return el('button', { type: 'button', class: e.danger ? 'danger' : '', onclick }, e.label);
+      const style = (e.color ? `--fc:var(--c-${e.color});` : '') + (e.depth ? `padding-left:${10 + e.depth * 16}px` : '');
+      return el(
+        'button',
+        { type: 'button', class: 'pick' + (e.current ? ' current' : ''), style: style || null, onclick },
+        svgIcon(e.icon, 'menu-ico'),
+        el('span', { class: 'menu-text' }, e.label),
+        e.current ? el('span', { class: 'menu-cur' }, tr('currentPlace')) : null,
+      );
     }),
   );
   m.hidden = false;
@@ -879,7 +969,7 @@ function tabMenu(t) {
   const items = [];
   if (!t.active) items.push({ label: tr('switchToTab'), run: () => activateTab(t) });
   if (/^(https?|file|ftp):/i.test(url)) {
-    items.push({ label: tr('save'), run: () => saveUrl(url, t.title) }, { label: tr('pin'), run: () => saveUrl(url, t.title, M.PINNED) });
+    items.push({ label: tr('save'), run: () => pickSave(url, t.title, reshow) }, { label: tr('pin'), run: () => saveUrl(url, t.title, M.PINNED) });
   }
   items.push({ label: tr('copyLink'), run: () => copyText(url) }, '-', { label: tr('closeTab'), danger: true, run: () => chrome.tabs.remove(t.id) });
   return items;
@@ -889,7 +979,7 @@ function remoteMenu(r) {
   const open = winUrls.has(M.normUrl(r.url));
   return [
     { label: open ? tr('switchToTab') : tr('openHere'), run: () => openUrl(r.url) },
-    { label: tr('save'), run: () => saveUrl(r.url, r.title) },
+    { label: tr('save'), run: () => pickSave(r.url, r.title, reshow) },
     { label: tr('pin'), run: () => saveUrl(r.url, r.title, M.PINNED) },
     { label: tr('copyLink'), run: () => copyText(r.url) },
   ];
@@ -940,9 +1030,13 @@ function toggleDevice(id) {
 }
 
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('#menu')) hideMenu();
+  // 用事件路径判断：菜单项点了以后可能换出下一级菜单（选文件夹），被点的那个按钮已经不在页面上了
+  if (!e.composedPath().includes($('#menu'))) hideMenu();
   if (e.target.closest('input.rename, #settings-pop')) return;
-  if (e.target.closest('#new-folder')) return newFolder();
+  if (e.target.closest('#new-folder')) {
+    if (secCollapsed.saved) toggleSection('saved'); // 收藏区折叠着：先展开，不然新文件夹看不见
+    return newFolder();
+  }
   const head = e.target.closest('.sec-head[data-sec]');
   if (head) return toggleSection(head.dataset.sec);
   if (e.target.closest('#new-tab')) return chrome.tabs.create({ windowId: winId ?? undefined });
@@ -956,13 +1050,13 @@ document.addEventListener('click', (e) => {
   if (t.kind === 'device') return act === 'device-menu' ? menuAt(deviceMenu(t.dev)) : toggleDevice(t.dev.id);
   if (t.kind === 'tab') {
     const url = tabUrl(t.tab);
-    if (act === 'save') return saveUrl(url, t.tab.title);
+    if (act === 'save') return pickSave(url, t.tab.title, menuAt);
     if (act === 'pin') return saveUrl(url, t.tab.title, M.PINNED);
     if (act === 'close') return chrome.tabs.remove(t.tab.id);
     return activateTab(t.tab);
   }
   if (t.kind === 'remote') {
-    if (act === 'save') return saveUrl(t.remote.url, t.remote.title);
+    if (act === 'save') return pickSave(t.remote.url, t.remote.title, menuAt);
     if (act === 'pin') return saveUrl(t.remote.url, t.remote.title, M.PINNED);
     return openUrl(t.remote.url);
   }
@@ -1217,7 +1311,7 @@ document.addEventListener('drop', async (e) => {
   try {
     if (t.zone === 'saved') {
       if (d.kind === 'node') op('move', { id: d.id, parent: t.parent, index: t.index });
-      else saveUrl(link.url, link.title, t.parent, t.index);
+      else saveUrl(link.url, link.title, t.parent, t.index, true);
     } else if (d.kind === 'tab') {
       const cur = winTabs.find((x) => x.id === d.tabId);
       let index = t.index ?? -1;
@@ -1454,7 +1548,8 @@ function setupChromeUi() {
 }
 
 async function init() {
-  const saved = await chrome.storage.local.get([SEC_KEY, FONT_KEY, LANG_KEY]);
+  const saved = await chrome.storage.local.get([SEC_KEY, FONT_KEY, LANG_KEY, LAST_FOLDER_KEY]);
+  lastFolder = saved[LAST_FOLDER_KEY] || null;
   langPref = saved[LANG_KEY] || '';
   setLang(langPref);
   applyI18n();
