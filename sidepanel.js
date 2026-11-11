@@ -9,6 +9,7 @@ import * as M from './model.js';
 import * as B from './bookmarks.js';
 import * as D from './devices.js';
 import * as C from './claims.js';
+import { tr, getLang, setLang, LANG_KEY } from './i18n.js';
 
 const $ = (sel) => document.querySelector(sel);
 const SELF_PREFIX = chrome.runtime.getURL('');
@@ -66,7 +67,6 @@ function actBtn(act, title, svg) {
   return b;
 }
 
-const COLOR_NAMES = { grey: '灰', blue: '蓝', red: '红', yellow: '黄', green: '绿', pink: '粉', purple: '紫', cyan: '青', orange: '橙' };
 
 function el(tag, attrs = {}, ...children) {
   const e = document.createElement(tag);
@@ -93,7 +93,7 @@ function displayTitle(n) {
 }
 
 const tabUrl = (t) => t.url || t.pendingUrl || '';
-const tabTitle = (t) => t.title || (tabUrl(t).startsWith('chrome://newtab') ? '新标签页' : tabUrl(t)) || '新标签页';
+const tabTitle = (t) => t.title || (tabUrl(t).startsWith('chrome://newtab') ? tr('newTab') : tabUrl(t)) || tr('newTab');
 const isSelf = (t) => tabUrl(t).startsWith(SELF_PREFIX);
 
 /** 置顶 / 收藏对应的标签：{ tab, own } 或 null（own=false 表示点了会认领这个已开着的标签） */
@@ -108,7 +108,7 @@ function openCls(n) {
 /** 认领的标签已经跳到别的网址时，提示「现在：xxx」 */
 function savedTip(n) {
   const r = savedTab(n);
-  if (r?.own && M.normUrl(tabUrl(r.tab)) !== M.normUrl(n.url)) return `${n.url}\n现在：${tabTitle(r.tab)}`;
+  if (r?.own && M.normUrl(tabUrl(r.tab)) !== M.normUrl(n.url)) return `${n.url}\n${tr('nowAt', tabTitle(r.tab))}`;
   return n.url;
 }
 
@@ -128,7 +128,7 @@ async function copyText(text) {
     document.execCommand('copy');
     ta.remove();
   }
-  showStatus('已复制链接', 'info', 1500);
+  showStatus(tr('copied'), 'info', 1500);
 }
 
 let statusTimer;
@@ -147,23 +147,18 @@ function showStatus(text, kind = 'info', ms = 0, action = null) {
   if (ms) statusTimer = setTimeout(() => (s.hidden = true), ms);
 }
 
-const SYNC_OFF_TIP = '这台电脑开着的网页不会同步到其他电脑（可以在设置里打开）；置顶和收藏存在 Chrome 书签里，不受影响';
-const SYNC_MSG = {
-  quota: '同步空间不够，这台电脑的网页只同步了一部分。可以在「其他电脑」里移除不再用的旧设备。',
-  rate: '写入太频繁，被 Chrome 限流，稍后自动重试。',
-  error: '同步失败，稍后自动重试。',
-};
+const syncMsg = (st) => (['quota', 'rate', 'error'].includes(st) ? tr('sync_' + st) : '');
 
 function showSync(st) {
   if (!st) return;
   const badge = $('#sync-state');
-  badge.textContent = st === 'off' ? '未开启同步' : SYNC_MSG[st] ? '未同步' : '已同步';
-  badge.classList.toggle('warn', !!SYNC_MSG[st]);
+  badge.textContent = st === 'off' ? tr('syncOff') : syncMsg(st) ? tr('syncBad') : tr('syncOk');
+  badge.classList.toggle('warn', !!syncMsg(st));
   badge.classList.toggle('off', st === 'off');
-  badge.title = st === 'off' ? SYNC_OFF_TIP : SYNC_MSG[st] || '这台电脑开着的网页已同步到你的 Google 账号；置顶和收藏存在 Chrome 书签里';
+  badge.title = st === 'off' ? tr('syncOffTip') : syncMsg(st) || tr('syncOkTip');
   if (st === syncStatus) return;
   syncStatus = st;
-  if (SYNC_MSG[st]) showStatus(SYNC_MSG[st], 'warn', 8000);
+  if (syncMsg(st)) showStatus(syncMsg(st), 'warn', 8000);
   else if ($('#status').classList.contains('warn')) $('#status').hidden = true;
 }
 
@@ -255,10 +250,10 @@ async function op(name, args = {}) {
   inflight++;
   try {
     const r = await chrome.runtime.sendMessage({ type: 'side-pocket:op', op: name, args });
-    if (!r?.ok) showStatus('操作失败：' + (r?.error || '未知错误'), 'warn', 4000);
+    if (!r?.ok) showStatus(tr('opFailed', r?.error || tr('unknownError')), 'warn', 4000);
     return r?.ok ? r.result : null;
   } catch (e) {
-    showStatus('操作失败：' + (e?.message || e), 'warn', 4000);
+    showStatus(tr('opFailed', e?.message || e), 'warn', 4000);
     return null;
   } finally {
     inflight--;
@@ -326,7 +321,7 @@ async function activateTab(t) {
 
 /** 把一个网页存进收藏 / 置顶（已收藏过的网址会挪过去，不重复建） */
 function saveUrl(url, title, parent = M.ROOT, index) {
-  if (!/^(https?|file|ftp|chrome):/i.test(url || '')) return showStatus('这个网页不能收藏', 'warn', 2500);
+  if (!/^(https?|file|ftp|chrome):/i.test(url || '')) return showStatus(tr('cantSave'), 'warn', 2500);
   return op('saveTab', { url, title: M.cleanTitle(title), parent, index });
 }
 
@@ -352,14 +347,14 @@ async function removeSaved(id) {
   const n = state.nodes[id];
   if (!n) return;
   const count = n.type === 'folder' ? M.countDescendants(v, id) : 0;
-  const what = n.type === 'folder' ? `文件夹「${displayTitle(n)}」${count ? `（含 ${count} 项）` : ''}` : `「${displayTitle(n)}」`;
+  const name = displayTitle(n);
   const ok = await op('remove', { id });
   if (!ok) return;
-  showStatus(`已删除${what}`, 'info', 8000, {
-    label: '撤销',
+  showStatus(tr('deleted', n.type === 'folder', name, count), 'info', 8000, {
+    label: tr('undo'),
     run: async () => {
       const back = await op('undoRemove');
-      if (!back) showStatus('撤销不了了，这一项已经删掉', 'warn', 3000);
+      if (!back) showStatus(tr('undoGone'), 'warn', 3000);
     },
   });
 }
@@ -533,9 +528,10 @@ function renderPinned() {
       const n = state.nodes[id];
       return el(
         'div',
-        { class: 'tile' + openCls(n), title: savedTip(n) === n.url ? displayTitle(n) : `${displayTitle(n)}\n现在：${tabTitle(savedTab(n).tab)}`, draggable: 'true', 'data-id': id, role: 'button', tabindex: '0' },
+        { class: 'tile' + openCls(n), title: savedTip(n) === n.url ? displayTitle(n) : `${displayTitle(n)}\n${tr('nowAt', tabTitle(savedTab(n).tab))}`, draggable: 'true', 'data-id': id, role: 'button', tabindex: '0' },
         favImg(n.url, '', 64, displayTitle(n)),
-        el('span', { class: 'tile-label' }, displayTitle(n)),
+        // 重命名时标题换成输入框（和收藏那一行用同一个）
+        renaming === id ? titleNode(n) : el('span', { class: 'tile-label' }, displayTitle(n)),
       );
     }),
   );
@@ -566,7 +562,7 @@ function renderSaved() {
       if (n.type !== 'folder') return linkRow(n);
       // 始终渲染子容器，靠 .collapsed + grid 过渡做展开/折叠动画；子项的树形连线由 CSS 画
       const kids = walk(id);
-      if (!kids.length) kids.push(el('div', { class: 'empty' }, '空文件夹，把网站拖进来'));
+      if (!kids.length) kids.push(el('div', { class: 'empty' }, tr('emptyFolder')));
       return el(
         'div',
         // 有颜色的文件夹：整块（文件夹名 + 里面的内容）铺一层这个颜色的淡底
@@ -576,7 +572,7 @@ function renderSaved() {
       );
     });
   const rows = walk(M.ROOT);
-  if (!rows.length) rows.push(el('div', { class: 'empty' }, '还没有收藏。把下面的网页拖到这里。'));
+  if (!rows.length) rows.push(el('div', { class: 'empty' }, tr('emptySaved')));
   patchChildren($('#saved'), rows);
 }
 
@@ -612,8 +608,8 @@ function linkRow(n) {
     el(
       'span',
       { class: 'actions' },
-      open ? actBtn('close-tab', '关闭标签（保留在收藏里）', SVG.x) : null,
-      actBtn('menu', '更多', SVG.more),
+      open ? actBtn('close-tab', tr('closeTabKeep'), SVG.x) : null,
+      actBtn('menu', tr('more'), SVG.more),
     ),
   );
 }
@@ -632,11 +628,11 @@ function folderRow(n) {
     titleNode(n),
     el(
       'span',
-      { class: 'cnt', title: open ? `${total} 个网站，${open} 个开着` : `${total} 个网站` },
+      { class: 'cnt', title: tr('folderCount', total, open) },
       open ? el('span', { class: 'o' }, String(open)) : null,
       el('span', { class: 'n' }, String(total)),
     ),
-    el('span', { class: 'actions' }, actBtn('menu', '更多', SVG.more)),
+    el('span', { class: 'actions' }, actBtn('menu', tr('more'), SVG.more)),
     svgIcon(SVG.caret, 'caret'),
   );
 }
@@ -652,7 +648,7 @@ function tabRow(t) {
       class: 'row tab open' + (t.active ? ' active' : ''),
       draggable: 'true',
       'data-tab': String(t.id),
-      title: owner ? `${url}\n属于${v.parent[owner.id] === M.PINNED ? '置顶' : '收藏'}「${displayTitle(owner)}」` : url,
+      title: owner ? `${url}\n${tr('belongsTo', v.parent[owner.id] === M.PINNED, displayTitle(owner))}` : url,
     },
     favImg(url, 'fav', 32, tabTitle(t)),
     owner ? svgIcon(SVG.pin, 'claim-ico') : null,
@@ -660,25 +656,47 @@ function tabRow(t) {
     el(
       'span',
       { class: 'actions' },
-      web ? actBtn('save', '收藏', SVG.save) : null,
-      web ? actBtn('pin', '置顶', SVG.pin) : null,
-      actBtn('close', '关闭标签', SVG.x),
+      web ? actBtn('save', tr('save'), SVG.save) : null,
+      web ? actBtn('pin', tr('pin'), SVG.pin) : null,
+      actBtn('close', tr('closeTab'), SVG.x),
     ),
   );
 }
 
 let shownActive; // 上次渲染时的当前标签 id；undefined = 还没渲染过，null = 那时没有当前标签
 
+// 人是不是正在用侧栏：鼠标在侧栏里，或者刚刚在侧栏里点过、按过键。
+// 不能只看侧栏有没有焦点：点收藏切标签的那一下，Chrome 会把焦点交给网页。
+let pointerIn = false;
+let lastTouch = 0;
+document.documentElement.addEventListener('mouseenter', () => (pointerIn = true));
+document.documentElement.addEventListener('mouseleave', () => (pointerIn = false));
+for (const ev of ['pointerdown', 'pointermove', 'keydown', 'wheel']) {
+  document.addEventListener(ev, () => { pointerIn = ev !== 'keydown' || pointerIn; lastTouch = Date.now(); }, { capture: true, passive: true });
+}
+const usingPanel = () => pointerIn || document.hasFocus() || Date.now() - lastTouch < 1500;
+
+/** 当前标签在侧栏里已经有一处亮着的看得见（置顶格子、收藏那一行或标签那一行） */
+function activeShown() {
+  const box = $('#scroll').getBoundingClientRect();
+  return [...document.querySelectorAll('#pinned .tile.active, #saved .row.active, #tabs .row.active')].some((x) => {
+    const r = x.getBoundingClientRect();
+    return r.height > 0 && r.top >= box.top && r.bottom <= box.bottom;
+  });
+}
+
 function renderWindow() {
   $('#tab-count').textContent = winTabs.length ? String(winTabs.length) : '';
   patchChildren($('#tabs'), winTabs.map(tabRow));
-  // 当前标签换了：把它那一行滚进视野。
-  // 刚打开侧栏时不滚（先看到最上面的置顶和收藏）；正在侧栏里操作时也不滚（点了上面的置顶，列表不该从手底下跑掉）
+  // 当前标签换了（在 Chrome 标签栏里点的、快捷键切的）：把它那一行滚进视野。不滚的情况：
+  // - 刚打开侧栏（先看到最上面的置顶和收藏）
+  // - 人正在用侧栏（点了上面的收藏，列表不该从手底下跑掉）
+  // - 它的置顶 / 收藏已经亮着并且看得见（不用再滚到下面那一行去）
   const active = winTabs.find((t) => t.active)?.id ?? null;
   if (active === shownActive) return;
   const first = shownActive === undefined;
   shownActive = active;
-  if (active == null || first || drag || document.hasFocus()) return;
+  if (active == null || first || drag || usingPanel() || activeShown()) return;
   const calm = matchMedia('(prefers-reduced-motion: reduce)').matches || document.visibilityState !== 'visible';
   document.querySelector(`#tabs .row.tab[data-tab="${active}"]`)?.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' });
 }
@@ -691,8 +709,8 @@ function remoteRow(dev, i) {
     { class: 'row remote' + (open ? ' local-open' : ''), draggable: 'true', 'data-remote': `${dev.id}|${i}`, title: t.url },
     favImg(t.url, 'fav', 32, t.title),
     el('span', { class: 'title' }, t.title || hostOf(t.url)),
-    open ? el('span', { class: 'tag' }, '已开着') : null,
-    el('span', { class: 'actions' }, actBtn('save', '收藏', SVG.save), actBtn('pin', '置顶', SVG.pin)),
+    open ? el('span', { class: 'tag' }, tr('alreadyOpen')) : null,
+    el('span', { class: 'actions' }, actBtn('save', tr('save'), SVG.save), actBtn('pin', tr('pin'), SVG.pin)),
   );
 }
 
@@ -704,20 +722,20 @@ function renderDevices() {
     out.push(
       el(
         'div',
-        { class: 'row device-head' + (collapsed ? ' is-collapsed' : ''), 'data-device': dev.id, title: `${dev.name}：最后更新 ${new Date(dev.at).toLocaleString()}` },
+        { class: 'row device-head' + (collapsed ? ' is-collapsed' : ''), 'data-device': dev.id, title: tr('lastUpdated', dev.name, new Date(dev.at).toLocaleString(getLang() === 'zh' ? 'zh-CN' : 'en-US')) },
         svgIcon(SVG.caret, 'caret'),
         el('span', { class: 'title' }, dev.name),
         el('span', { class: 'when' }, D.relTime(dev.at)),
         el('span', { class: 'cnt' }, el('span', { class: 'n' }, String(dev.tabs.length))),
-        el('span', { class: 'actions' }, actBtn('device-menu', '更多', SVG.more)),
+        el('span', { class: 'actions' }, actBtn('device-menu', tr('more'), SVG.more)),
       ),
     );
     if (collapsed) continue;
     dev.tabs.forEach((_, i) => out.push(remoteRow(dev, i)));
-    if (!dev.tabs.length) out.push(el('div', { class: 'empty', 'data-device': dev.id + '-empty' }, '这台电脑现在没有开着的网页'));
-    if (dev.skipped) out.push(el('div', { class: 'empty', 'data-device': dev.id + '-more' }, `还有 ${dev.skipped} 个网页太多没同步过来`));
+    if (!dev.tabs.length) out.push(el('div', { class: 'empty', 'data-device': dev.id + '-empty' }, tr('deviceNoTabs')));
+    if (dev.skipped) out.push(el('div', { class: 'empty', 'data-device': dev.id + '-more' }, tr('deviceSkipped', dev.skipped)));
   }
-  if (!devices.length) out.push(el('div', { class: 'empty' }, '在另一台电脑的 Chrome 里装上 Side Pocket，它开着的网页会出现在这里'));
+  if (!devices.length) out.push(el('div', { class: 'empty' }, tr('noDevices')));
   patchChildren($('#devices'), out);
 }
 
@@ -731,15 +749,15 @@ function whereOf(id) {
     names.unshift(state.nodes[p].title);
     p = v.parent[p];
   }
-  if (p === M.PINNED) return '置顶';
-  return names.length ? names.join(' / ') : '收藏';
+  if (p === M.PINNED) return tr('secPinned');
+  return names.length ? names.join(' / ') : tr('secSaved');
 }
 
 function renderResults() {
   const q = query.toLowerCase();
   const hit = (title, url) => (title || '').toLowerCase().includes(q) || (url || '').toLowerCase().includes(q);
   const all = [];
-  for (const t of winTabs) if (hit(tabTitle(t), tabUrl(t))) all.push({ attr: { 'data-tab': String(t.id) }, url: tabUrl(t), title: tabTitle(t), where: '这个窗口', rank: 0 });
+  for (const t of winTabs) if (hit(tabTitle(t), tabUrl(t))) all.push({ attr: { 'data-tab': String(t.id) }, url: tabUrl(t), title: tabTitle(t), where: tr('secWindow'), rank: 0 });
   for (const n of Object.values(state.nodes)) {
     if (n.type === 'link' && hit(n.title, n.url)) all.push({ attr: { 'data-id': n.id }, url: n.url, title: displayTitle(n), where: whereOf(n.id), rank: 1 });
   }
@@ -762,7 +780,7 @@ function renderResults() {
       el('span', { class: 'where' }, r.where),
     ),
   );
-  if (!rows.length) rows.push(el('div', { class: 'empty' }, `没有找到「${query}」。试试网址里的关键词。`));
+  if (!rows.length) rows.push(el('div', { class: 'empty' }, tr('notFound', query)));
   patchChildren($('#results'), rows);
 }
 
@@ -802,19 +820,19 @@ function colorPicker(id) {
   };
   return el(
     'div',
-    { class: 'menu-colors', role: 'group', 'aria-label': '文件夹颜色' },
+    { class: 'menu-colors', role: 'group', 'aria-label': tr('folderColor') },
     ...M.FOLDER_COLORS.map((c) =>
       el('button', {
         type: 'button',
         class: 'swatch',
         style: `--sw:var(--c-${c})`,
-        title: COLOR_NAMES[c],
-        'aria-label': COLOR_NAMES[c],
+        title: tr('colors')[c],
+        'aria-label': tr('colors')[c],
         'aria-pressed': String(cur === c),
         onclick: pick(c),
       }),
     ),
-    el('button', { type: 'button', class: 'swatch none', title: '无颜色', 'aria-label': '无颜色', 'aria-pressed': String(!cur), onclick: pick(null) }),
+    el('button', { type: 'button', class: 'swatch none', title: tr('noColor'), 'aria-label': tr('noColor'), 'aria-pressed': String(!cur), onclick: pick(null) }),
   );
 }
 
@@ -831,61 +849,61 @@ function nodeMenu(id) {
   if (n.type === 'folder') {
     const count = M.countDescendants(v, id);
     return [
-      { label: '重命名', run: () => startRename(id) },
-      { label: '新建子文件夹', run: () => newFolder(id) },
-      { label: '新建文件夹', run: () => newFolder(parent, after()) },
+      { label: tr('rename'), run: () => startRename(id) },
+      { label: tr('newSubfolder'), run: () => newFolder(id) },
+      { label: tr('newFolder'), run: () => newFolder(parent, after()) },
       '-',
-      { heading: '颜色' },
+      { heading: tr('color') },
       { colors: id },
       '-',
-      { label: count ? `删除文件夹（含 ${count} 项）` : '删除文件夹', danger: true, run: () => removeSaved(id) },
+      { label: tr('deleteFolder', count), danger: true, run: () => removeSaved(id) },
     ];
   }
   const r = savedTab(n);
   const moved = r?.own && M.normUrl(tabUrl(r.tab)) !== M.normUrl(n.url);
   const items = [
-    { label: r ? '切换到该标签' : '打开', run: () => openSaved(n) },
-    { label: '重命名', run: () => startRename(id) },
-    moved ? { label: '回到原网址', run: () => backToOrigin(n) } : null,
-    { label: '复制链接', run: () => copyText(n.url) },
-    parent === M.PINNED ? { label: '取消置顶', run: () => op('unpin', { id }) } : { label: '置顶', run: () => op('pin', { id }) },
+    { label: r ? tr('switchToTab') : tr('open'), run: () => openSaved(n) },
+    { label: tr('rename'), run: () => startRename(id) },
+    moved ? { label: tr('backToOrigin'), run: () => backToOrigin(n) } : null,
+    { label: tr('copyLink'), run: () => copyText(n.url) },
+    parent === M.PINNED ? { label: tr('unpin'), run: () => op('unpin', { id }) } : { label: tr('pin'), run: () => op('pin', { id }) },
   ];
-  if (parent !== M.PINNED) items.push({ label: '新建文件夹', run: () => newFolder(parent, after()) });
-  if (r) items.push({ label: '关闭标签', run: () => chrome.tabs.remove(r.tab.id) });
-  items.push('-', { label: '删除', danger: true, run: () => removeSaved(id) });
+  if (parent !== M.PINNED) items.push({ label: tr('newFolder'), run: () => newFolder(parent, after()) });
+  if (r) items.push({ label: tr('closeTab'), run: () => chrome.tabs.remove(r.tab.id) });
+  items.push('-', { label: tr('del'), danger: true, run: () => removeSaved(id) });
   return items.filter(Boolean);
 }
 
 function tabMenu(t) {
   const url = tabUrl(t);
   const items = [];
-  if (!t.active) items.push({ label: '切换到该标签', run: () => activateTab(t) });
+  if (!t.active) items.push({ label: tr('switchToTab'), run: () => activateTab(t) });
   if (/^(https?|file|ftp):/i.test(url)) {
-    items.push({ label: '收藏', run: () => saveUrl(url, t.title) }, { label: '置顶', run: () => saveUrl(url, t.title, M.PINNED) });
+    items.push({ label: tr('save'), run: () => saveUrl(url, t.title) }, { label: tr('pin'), run: () => saveUrl(url, t.title, M.PINNED) });
   }
-  items.push({ label: '复制链接', run: () => copyText(url) }, '-', { label: '关闭标签', danger: true, run: () => chrome.tabs.remove(t.id) });
+  items.push({ label: tr('copyLink'), run: () => copyText(url) }, '-', { label: tr('closeTab'), danger: true, run: () => chrome.tabs.remove(t.id) });
   return items;
 }
 
 function remoteMenu(r) {
   const open = winUrls.has(M.normUrl(r.url));
   return [
-    { label: open ? '切换到该标签' : '在这台电脑打开', run: () => openUrl(r.url) },
-    { label: '收藏', run: () => saveUrl(r.url, r.title) },
-    { label: '置顶', run: () => saveUrl(r.url, r.title, M.PINNED) },
-    { label: '复制链接', run: () => copyText(r.url) },
+    { label: open ? tr('switchToTab') : tr('openHere'), run: () => openUrl(r.url) },
+    { label: tr('save'), run: () => saveUrl(r.url, r.title) },
+    { label: tr('pin'), run: () => saveUrl(r.url, r.title, M.PINNED) },
+    { label: tr('copyLink'), run: () => copyText(r.url) },
   ];
 }
 
 function deviceMenu(dev) {
   return [
-    { heading: `${dev.name} · 最后更新 ${D.relTime(dev.at)}` },
+    { heading: tr('deviceHeading', dev.name, D.relTime(dev.at)) },
     {
-      label: '移除这台设备',
+      label: tr('removeDevice'),
       danger: true,
       run: async () => {
         await op('removeDevice', { id: dev.id });
-        showStatus(`已移除「${dev.name}」。如果它还在用，下次有变化时会重新出现。`, 'info', 4000);
+        showStatus(tr('deviceRemoved', dev.name), 'info', 4000);
       },
     },
   ];
@@ -968,7 +986,7 @@ document.addEventListener('contextmenu', (e) => {
   else if (t.kind === 'tab') at(tabMenu(t.tab));
   else if (t.kind === 'remote') at(remoteMenu(t.remote));
   else if (t.kind === 'device') at(deviceMenu(t.dev));
-  else if (e.target.closest('#saved-section')) showMenu(e.clientX, e.clientY, [{ label: '新建文件夹', run: () => newFolder() }]);
+  else if (e.target.closest('#saved-section')) showMenu(e.clientX, e.clientY, [{ label: tr('newFolder'), run: () => newFolder() }]);
   else hideMenu();
 });
 
@@ -1210,7 +1228,7 @@ document.addEventListener('drop', async (e) => {
     }
   } catch (err) {
     console.warn('[side-pocket] 拖拽操作失败', err);
-    showStatus('操作失败：' + (err?.message || err), 'warn', 3000);
+    showStatus(tr('opFailed', err?.message || err), 'warn', 3000);
   }
 });
 
@@ -1257,17 +1275,119 @@ setInterval(() => {
   if (!document.hidden && !query && devices.length && !drag) renderDevices();
 }, 60e3);
 
+/* ---------- 语言 ---------- */
+
+let langPref = ''; // 设置里选的语言：'' = 跟随浏览器
+
+/** 把页面上写死的文字（区块标题、设置里的说明等）换成当前语言 */
+function applyI18n() {
+  document.documentElement.lang = getLang() === 'zh' ? 'zh-CN' : 'en';
+  for (const e of document.querySelectorAll('[data-i18n]')) e.textContent = tr(e.dataset.i18n);
+  for (const e of document.querySelectorAll('[data-i18n-ph]')) e.placeholder = tr(e.dataset.i18nPh);
+  for (const e of document.querySelectorAll('[data-i18n-label]')) e.setAttribute('aria-label', tr(e.dataset.i18nLabel));
+  for (const e of document.querySelectorAll('[data-i18n-title]')) {
+    e.title = tr(e.dataset.i18nTitle);
+    e.setAttribute('aria-label', e.title);
+  }
+  $('#pinned').dataset.empty = tr('pinnedEmpty');
+}
+
+/* ---------- 外观：字体、粗细、字号 ---------- */
+// 只存在这台电脑（storage.local）：每台电脑装的字体不一样。样式里用 --ff-user / --fw / --fw-strong 和 data-size。
+
+const FONT_KEY = 'ui.font'; // { family: 字体名（'' = 跟随系统）, weight: 普通文字粗细, strong: 强调文字粗细, size: 's' | 'm' | 'l' }
+const WEIGHTS = [300, 400, 500];
+const STRONGS = [400, 500, 600, 700];
+const SIZES = ['s', 'm', 'l'];
+let look = { family: '', weight: 400, strong: 500, size: 'm' };
+let fontList = null; // 这台电脑已安装的字体，打开设置时才读
+
+function cleanLook(raw) {
+  const o = raw && typeof raw === 'object' ? raw : {};
+  return {
+    family: typeof o.family === 'string' ? o.family.replace(/["'\\;{}<>]/g, '').trim().slice(0, 100) : '',
+    weight: WEIGHTS.includes(o.weight) ? o.weight : 400,
+    strong: STRONGS.includes(o.strong) ? o.strong : 500,
+    size: SIZES.includes(o.size) ? o.size : 'm',
+  };
+}
+
+function applyLook(raw) {
+  look = cleanLook(raw);
+  const root = document.documentElement;
+  if (look.family) root.style.setProperty('--ff-user', `"${look.family}"`);
+  else root.style.removeProperty('--ff-user');
+  root.style.setProperty('--fw', String(look.weight));
+  root.style.setProperty('--fw-strong', String(look.strong));
+  root.dataset.size = look.size;
+}
+
+function saveLook(patch) {
+  applyLook({ ...look, ...patch });
+  chrome.storage.local.set({ [FONT_KEY]: look });
+}
+
+/** 设置里「外观」那几个下拉框：选项的文字跟着语言走，选中的是当前值 */
+async function fillLookUi() {
+  const opt = (value, label) => el('option', { value: String(value) }, label);
+  const fill = (sel, options, cur) => {
+    $(sel).replaceChildren(...options);
+    $(sel).value = String(cur);
+  };
+  fill('#font-weight', WEIGHTS.map((w) => opt(w, tr('weights')[w])), look.weight);
+  fill('#font-strong', STRONGS.map((w) => opt(w, tr('weights')[w])), look.strong);
+  fill('#font-size', SIZES.map((k) => opt(k, tr('sizes')[k])), look.size);
+  fill('#lang', [opt('', tr('langAuto')), opt('zh', '中文'), opt('en', 'English')], langPref);
+  if (!fontList) fontList = (await chrome.fontSettings?.getFontList?.().catch(() => null)) || [];
+  const fonts = fontList.map((f) => [f.fontId, f.displayName || f.fontId]);
+  if (look.family && !fonts.some(([id]) => id === look.family)) fonts.unshift([look.family, look.family]);
+  fill('#font-family', [opt('', tr('fontSystem')), ...fonts.map(([id, name]) => opt(id, name))], look.family);
+}
+
+function setupLookUi() {
+  $('#font-family').addEventListener('change', (e) => saveLook({ family: e.target.value }));
+  $('#font-weight').addEventListener('change', (e) => saveLook({ weight: Number(e.target.value) }));
+  $('#font-strong').addEventListener('change', (e) => saveLook({ strong: Number(e.target.value) }));
+  $('#font-size').addEventListener('change', (e) => saveLook({ size: e.target.value }));
+  $('#reset-look').addEventListener('click', async () => {
+    applyLook(null);
+    await chrome.storage.local.remove(FONT_KEY);
+    fillLookUi();
+  });
+  // 换语言：存下来，下面的 storage 监听负责让这个窗口和别的窗口的侧栏、后台都换过去
+  $('#lang').addEventListener('change', (e) => {
+    if (e.target.value) chrome.storage.local.set({ [LANG_KEY]: e.target.value });
+    else chrome.storage.local.remove(LANG_KEY);
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (changes[FONT_KEY]) {
+      applyLook(changes[FONT_KEY].newValue);
+      if (!$('#settings-pop').hidden) fillLookUi();
+    }
+    if (changes[LANG_KEY]) {
+      langPref = changes[LANG_KEY].newValue || '';
+      setLang(langPref);
+      applyI18n();
+      showSync(syncStatus);
+      render();
+      if (!$('#settings-pop').hidden) refreshSettingsUi();
+    }
+  });
+}
+
 /* ---------- 设置 ---------- */
 
 /** 设置里显示当前快捷键和这台电脑的名字 */
 async function refreshSettingsUi() {
+  fillLookUi();
   const [cmds, info] = await Promise.all([
     chrome.commands.getAll().catch(() => []),
     chrome.runtime.sendMessage({ type: 'side-pocket:info' }).catch(() => null),
   ]);
   const key = cmds.find((c) => c.name === '_execute_action')?.shortcut || '';
   const k = $('#shortcut-key');
-  k.textContent = key || '未设置';
+  k.textContent = key || tr('notSet');
   k.classList.toggle('warn', !key);
   $('#shortcut-hint').hidden = !!key;
   const input = $('#device-name');
@@ -1307,7 +1427,7 @@ function setupChromeUi() {
     if (r?.ok) {
       nameInput.value = r.result;
       lastName = r.result;
-      showStatus(`这台电脑叫「${r.result}」，其他电脑上会这样显示`, 'info', 2500);
+      showStatus(tr('deviceNamed', r.result), 'info', 2500);
     }
   };
   nameInput.addEventListener('focus', () => (lastName = nameInput.value.trim()));
@@ -1324,9 +1444,9 @@ function setupChromeUi() {
     const r = await chrome.runtime.sendMessage({ type: 'side-pocket:op', op: 'setShare', args: { on } }).catch(() => null);
     if (!r?.ok) {
       share.checked = !on;
-      return showStatus('没改成：' + (r?.error || '后台没有响应'), 'warn', 3000);
+      return showStatus(tr('shareFailed', r?.error || tr('noResponse')), 'warn', 3000);
     }
-    showStatus(on ? '已打开：这台电脑开着的网页会出现在你其他电脑的侧栏里' : '已关闭：这台电脑的网页清单已从同步里删掉', 'info', 3500);
+    showStatus(on ? tr('shareOn') : tr('shareOff'), 'info', 3500);
   });
 
   // 从设置页改完回来，侧栏重新拿到焦点时更新显示
@@ -1334,8 +1454,14 @@ function setupChromeUi() {
 }
 
 async function init() {
+  const saved = await chrome.storage.local.get([SEC_KEY, FONT_KEY, LANG_KEY]);
+  langPref = saved[LANG_KEY] || '';
+  setLang(langPref);
+  applyI18n();
+  applyLook(saved[FONT_KEY]);
   setupChromeUi();
-  secCollapsed = (await chrome.storage.local.get(SEC_KEY))[SEC_KEY] || {};
+  setupLookUi();
+  secCollapsed = saved[SEC_KEY] || {};
   applySections();
   const s = await chrome.storage.session.get(D.VIEW_KEY);
   showSync(s[D.VIEW_KEY]?.status);

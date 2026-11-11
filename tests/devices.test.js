@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { setLang } from '../i18n.js';
 import * as D from '../devices.js';
 
 const tab = (id, url, title = url, extra = {}) => ({ id, url, title, windowId: 1, index: id, ...extra });
+
+setLang('zh'); // 断言里的文案是中文
 
 test('清单：只要普通网页，按窗口和标签栏顺序，同网址只留一个', () => {
   const items = D.buildSnapshot([

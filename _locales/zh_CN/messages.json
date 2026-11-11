@@ -1,0 +1,5 @@
+{
+  "extDesc": { "message": "Chrome 侧边栏：这个窗口的标签和 Chrome 标签栏一模一样；还能看到你其他电脑上开着的网页，点一下接着看。置顶和收藏存在 Chrome 书签里。" },
+  "actionTitle": { "message": "打开或关闭 Side Pocket" },
+  "cmdToggle": { "message": "打开或关闭侧边栏" }
+}

@@ -1,11 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { setLang } from '../i18n.js';
 import * as M from '../model.js';
 
 const titles = (s, key) => {
   const v = M.view(s);
   return v.order[key].map((id) => s.nodes[id].title);
 };
+
+setLang('zh'); // 断言里的文案是中文
 
 test('添加、移动、排序、置顶', () => {
   const s = M.emptyState();

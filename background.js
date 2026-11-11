@@ -13,6 +13,7 @@ import * as B from './bookmarks.js';
 import * as D from './devices.js';
 import * as L from './legacy.js';
 import * as C from './claims.js';
+import { tr, loadLang, setLang, LANG_KEY } from './i18n.js';
 
 const SELF_PREFIX = chrome.runtime.getURL('');
 const UPLOAD_ALARM = 'side-pocket-upload';
@@ -67,6 +68,7 @@ async function init() {
     deviceId = M.newId();
     await chrome.storage.local.set({ deviceId });
   }
+  await loadLang(); // 界面语言：出错提示、默认电脑名、新建置顶文件夹时的名字都跟着它
   if (!(await shareOn())) status = 'off';
   await reloadSaved();
   // 清理失败不能拖垮其他功能：旧数据还在原处、也有备份，下次启动再试
@@ -90,7 +92,7 @@ const bookmarkable = (u) => typeof u === 'string' && u.length <= 8000 && /^(http
 
 /** 重新读取书签；Side Pocket 文件夹被删掉了就重新建一个空的 */
 async function reloadSaved() {
-  ids = await B.resolveRoot(bm, { create: true });
+  ids = await B.resolveRoot(bm, { create: true, pinnedTitle: tr('pinnedFolder') });
   saved = await B.loadNodes(bm, ids);
 }
 
@@ -118,8 +120,8 @@ async function setFolderCollapsed(id, on) {
 }
 
 async function savedOp(op, a) {
-  if (!validParent(a.parent)) throw new Error('无效目标');
-  if (a.id != null && !isSaved(a.id) && !(op === 'addFolder' && M.isValidId(a.id))) throw new Error('无效 id');
+  if (!validParent(a.parent)) throw new Error(tr('errInvalid'));
+  if (a.id != null && !isSaved(a.id) && !(op === 'addFolder' && M.isValidId(a.id))) throw new Error(tr('errInvalid'));
   await reloadSaved();
   if (op === 'setColor') return setFolderColor(a.id, a.color);
   if (op === 'setCollapsed') return setFolderCollapsed(a.id, a.collapsed);
@@ -138,12 +140,12 @@ async function savedOp(op, a) {
   else if (op === 'pin') result = saved[a.id]?.type === 'link' && (await B.moveSaved(bm, ids, saved, v, a.id, M.PINNED, a.index));
   else if (op === 'saveTab') {
     // 把一个标签（本机的、或其他电脑清单里的）存成收藏 / 置顶。已经收藏过的网址：挪过去，不重复建
-    if (!bookmarkable(a.url)) throw new Error('这个网址不能收藏');
+    if (!bookmarkable(a.url)) throw new Error(tr('cantSave'));
     const parent = a.parent ?? M.ROOT;
     const exist = Object.values(saved).find((n) => n.type === 'link' && M.normUrl(n.url) === M.normUrl(a.url));
     if (exist) result = await B.moveSaved(bm, ids, saved, v, exist.id, parent, a.index);
     else result = !!(await B.createLink(bm, ids, saved, v, { title: a.title, url: a.url }, parent, a.index));
-  } else throw new Error('未知操作: ' + op);
+  } else throw new Error(tr('errInvalid') + ': ' + op);
   await reloadSaved();
   const next = B.carryColors(await getColors(), before, B.folderPaths(saved));
   if (next) await chrome.storage.sync.set({ [B.COLOR_KEY]: next });
@@ -313,12 +315,12 @@ async function deviceOp(op, a) {
     return a.on !== false;
   }
   if (op === 'removeDevice') {
-    if (!D.isDeviceId(a.id) || a.id === deviceId) throw new Error('无效设备');
+    if (!D.isDeviceId(a.id) || a.id === deviceId) throw new Error(tr('errInvalid'));
     const keys = D.deviceKeys(await chrome.storage.sync.get(null), a.id);
     if (keys.length) await chrome.storage.sync.remove(keys);
     return keys.length > 0;
   }
-  throw new Error('未知操作: ' + op);
+  throw new Error(tr('errInvalid') + ': ' + op);
 }
 
 /* ---------- 置顶 / 收藏认领的标签：跟着标签走 ---------- */
@@ -376,7 +378,7 @@ chrome.tabs.onReplaced.addListener((added, removed) =>
 /** 侧栏发来的认领：记下「这个窗口里，这个标签归这个置顶 / 收藏」，返回这个窗口最新的认领记录 */
 function claimOp(a) {
   if (!Number.isInteger(a.winId) || !Number.isInteger(a.tid) || typeof a.nid !== 'string' || !a.nid || a.nid.length > 64) {
-    return Promise.reject(new Error('无效认领'));
+    return Promise.reject(new Error(tr('errInvalid')));
   }
   return claimRun(async () => {
     const next = C.claim(await getClaims(a.winId), a.nid, a.tid);
@@ -437,6 +439,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
   legacyTimer = setTimeout(() => run(() => cleanupLegacy({ full: false })), 1000);
 });
 
+// 用户在设置里换了语言
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[LANG_KEY]) setLang(changes[LANG_KEY].newValue);
+});
+
 /* ---------- 侧栏发来的操作 ---------- */
 
 const SAVED_OPS = new Set(['addFolder', 'rename', 'remove', 'move', 'pin', 'unpin', 'setColor', 'setCollapsed', 'saveTab', 'undoRemove']);
@@ -457,7 +464,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const a = msg.args || {};
     if (SAVED_OPS.has(msg.op)) return reply(run(() => savedOp(msg.op, a)));
     if (DEVICE_OPS.has(msg.op)) return reply(run(() => deviceOp(msg.op, a)));
-    return reply(Promise.reject(new Error('未知操作')));
+    return reply(Promise.reject(new Error(tr('errInvalid'))));
   }
   if (msg.type === 'side-pocket:upload') return reply(run(() => upload({ force: true })));
   if (msg.type === 'side-pocket:claim') return reply(claimOp(msg));

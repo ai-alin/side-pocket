@@ -7,6 +7,7 @@
 // Chrome 同步存储单项最多 8KB、总共约 100KB，所以清单分块存，每台电脑最多 MAX_CHUNKS 块，放不下的不同步。
 
 import { normUrl } from './model.js';
+import { tr } from './i18n.js';
 
 export const META = 'dv:';
 export const CHUNK = 'dt:';
@@ -108,7 +109,7 @@ export function parseDevices(all = {}, selfId = '') {
         if (Array.isArray(e) && typeof e[0] === 'string' && isWeb(e[0])) tabs.push({ url: e[0], title: String(e[1] || '') });
       }
     }
-    out.push({ id, name: String(m.nm || '另一台电脑'), at: Number(m.at) || 0, tabs, skipped: Number(m.sk) || 0 });
+    out.push({ id, name: String(m.nm || tr('anotherComputer')), at: Number(m.at) || 0, tabs, skipped: Number(m.sk) || 0 });
   }
   return out.sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1));
 }
@@ -122,25 +123,25 @@ const OS_NAMES = { mac: 'Mac', win: 'Windows', linux: 'Linux', cros: 'ChromeOS' 
 
 /** 扩展读不到电脑名，默认用系统名加设备 id 后 4 位，用户可以在设置里改 */
 export function defaultName(os, deviceId) {
-  return `${OS_NAMES[os] || '电脑'} · ${String(deviceId).slice(-4)}`;
+  return `${OS_NAMES[os] || tr('computer')} · ${String(deviceId).slice(-4)}`;
 }
 
 export function cleanName(name) {
   return String(name ?? '').trim().slice(0, 40);
 }
 
-/** 「刚刚」「3 分钟前」「2 小时前」「昨天 22:10」「10月31日」 */
+/** 「刚刚」「3 分钟前」「2 小时前」「昨天 22:10」「10月31日」（英文：Just now / 3 min ago / 2 hr ago / Yesterday 22:10 / Oct 31） */
 export function relTime(at, now = Date.now()) {
   if (!at) return '';
   const d = Math.max(0, now - at);
-  if (d < 60e3) return '刚刚';
-  if (d < 3600e3) return `${Math.floor(d / 60e3)} 分钟前`;
+  if (d < 60e3) return tr('justNow');
+  if (d < 3600e3) return tr('minsAgo', Math.floor(d / 60e3));
   const a = new Date(at);
   const n = new Date(now);
   const hm = `${String(a.getHours()).padStart(2, '0')}:${String(a.getMinutes()).padStart(2, '0')}`;
   const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const days = Math.round((day(n) - day(a)) / 86400e3);
-  if (days === 0) return `${Math.floor(d / 3600e3)} 小时前`;
-  if (days === 1) return `昨天 ${hm}`;
-  return `${a.getMonth() + 1}月${a.getDate()}日`;
+  if (days === 0) return tr('hoursAgo', Math.floor(d / 3600e3));
+  if (days === 1) return tr('yesterday', hm);
+  return tr('monthDay', a.getMonth() + 1, a.getDate());
 }

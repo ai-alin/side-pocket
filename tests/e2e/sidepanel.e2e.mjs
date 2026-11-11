@@ -9,7 +9,7 @@ import { execSync } from 'node:child_process';
 import { chromium } from 'playwright';
 
 const EXT = '/tmp/ext-sidepanel';
-execSync(`rm -rf ${EXT} && mkdir -p ${EXT} && cp -r manifest.json *.js *.html *.css icons ${EXT}/`);
+execSync(`rm -rf ${EXT} && mkdir -p ${EXT} && cp -r manifest.json *.js *.html *.css icons _locales ${EXT}/`);
 const PROF = '/tmp/prof-sidepanel-' + Date.now();
 const launch = () =>
   chromium.launchPersistentContext(PROF, {
@@ -20,6 +20,12 @@ let ctx = await launch();
 let [sw] = ctx.serviceWorkers();
 if (!sw) sw = await ctx.waitForEvent('serviceworker');
 const extId = new URL(sw.url()).host;
+// 下面的断言都是中文：不管这台电脑的浏览器是什么语言，先固定成中文（书签里的置顶文件夹也改回「置顶」）
+await new Promise((r) => setTimeout(r, 1000));
+await sw.evaluate(async () => {
+  await chrome.storage.local.set({ 'ui.lang': 'zh' });
+  for (const b of await chrome.bookmarks.search({ title: 'Pinned' })) if (!b.url) await chrome.bookmarks.update(b.id, { title: '置顶' });
+});
 const page = (r) => r.fulfill({ contentType: 'text/html', body: `<!doctype html><meta charset=utf-8><title>${new URL(r.request().url()).pathname.slice(1)}</title><p>正文</p>` });
 const route = async (c) => {
   await c.route('http://site.test/**', page);
@@ -46,9 +52,9 @@ check('快捷键已注册（默认 Command+Shift+Y / Ctrl+Shift+Y，不和网页
 const behavior = await sw.evaluate(() => chrome.sidePanel.getPanelBehavior());
 check('点工具栏图标 / 按快捷键：打开或关闭侧边栏', behavior.openPanelOnActionClick === true, JSON.stringify(behavior));
 const manifest = await sw.evaluate(() => chrome.runtime.getManifest());
-check('名字是 Side Pocket', manifest.name === 'Side Pocket' && manifest.action.default_title === '打开或关闭 Side Pocket', manifest.name);
+check('名字是 Side Pocket', manifest.name === 'Side Pocket' && ['打开或关闭 Side Pocket', 'Open or close Side Pocket'].includes(manifest.action.default_title) && manifest.default_locale === 'en' && !manifest.description.includes('__MSG'), manifest.name);
 check('不申请「读取和修改所有网站」，不往网页里注入', !manifest.host_permissions && !manifest.content_scripts && !manifest.permissions.includes('scripting'));
-check('只申请用得到的权限', JSON.stringify([...manifest.permissions].sort()) === JSON.stringify(['alarms', 'bookmarks', 'favicon', 'sidePanel', 'storage', 'tabs']), JSON.stringify(manifest.permissions));
+check('只申请用得到的权限', JSON.stringify([...manifest.permissions].sort()) === JSON.stringify(['alarms', 'bookmarks', 'favicon', 'fontSettings', 'sidePanel', 'storage', 'tabs']), JSON.stringify(manifest.permissions));
 
 const site = await ctx.newPage();
 await site.goto('http://site.test/a');
@@ -101,6 +107,10 @@ const extra = await sw.evaluate(async (w) => { const out = []; for (let i = 0; i
 await sleep(1500);
 // 测试里侧栏是一个普通标签页，切到别的标签它就到后台了；真正的侧边栏一直看得见，这里装成那样
 await panel.evaluate(() => { Object.defineProperty(document, 'hidden', { get: () => false }); document.hasFocus = () => false; document.querySelector('#scroll').scrollTop = 0; });
+// 鼠标不在侧栏里（在网页上）
+const mouseOut = () => panel.evaluate(() => document.documentElement.dispatchEvent(new MouseEvent('mouseleave')));
+await sleep(1600);
+await mouseOut();
 const inView = (id) => panel.evaluate((id) => {
   const r = document.querySelector(`#tabs .row.tab[data-tab="${id}"]`)?.getBoundingClientRect();
   const s = document.querySelector('#scroll').getBoundingClientRect();
@@ -110,10 +120,26 @@ const lastTab = extra.at(-1);
 check('标签很多时，最后一个标签一开始在屏幕外', !(await inView(lastTab)));
 await sw.evaluate((id) => chrome.tabs.update(id, { active: true }), lastTab);
 check('在 Chrome 里切到它：侧栏自动把它滚进视野，并标成当前', !!(await until(async () => (await inView(lastTab)) && (await panel.locator(`#tabs .row.tab.active[data-tab="${lastTab}"]`).count()) === 1, 5000)));
-await panel.evaluate(() => { document.hasFocus = () => true; document.querySelector('#scroll').scrollTop = 0; });
+const scrollTop = () => panel.evaluate(() => document.querySelector('#scroll').scrollTop);
+// 鼠标在侧栏里、焦点已经被 Chrome 交给网页：就是「点了上面的收藏，它的标签在最下面」的情形
+await panel.evaluate(() => { document.querySelector('#scroll').scrollTop = 0; document.documentElement.dispatchEvent(new MouseEvent('mouseenter')); });
 await sw.evaluate((id) => chrome.tabs.update(id, { active: true }), extra.at(-2));
 await sleep(1200);
-check('正在侧栏里操作时（侧栏有焦点）：不自动滚动', (await panel.evaluate(() => document.querySelector('#scroll').scrollTop)) === 0);
+check('鼠标在侧栏里时（刚点了上面的收藏）：不自动滚动，哪怕焦点已经到了网页', (await scrollTop()) === 0);
+await mouseOut();
+await panel.evaluate(() => { document.hasFocus = () => true; });
+await sw.evaluate((id) => chrome.tabs.update(id, { active: true }), extra.at(-3));
+await sleep(1200);
+check('侧栏有焦点时：不自动滚动', (await scrollTop()) === 0);
+// 当前标签的置顶已经亮着并且看得见：不用滚到下面那一行
+await panel.evaluate(() => { document.hasFocus = () => false; });
+await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'side-pocket:op', op: 'saveTab', args: { url: 'http://site.test/many23', title: 'many23', parent: 'pinned' } }));
+await sleep(1000);
+await sw.evaluate((id) => chrome.tabs.update(id, { active: true }), lastTab);
+await sleep(1200);
+check('在 Chrome 里切到一个标签，它的置顶在上面亮着：不滚到下面去', (await scrollTop()) === 0 && (await panel.locator('#pinned .tile.active').count()) === 1, String(await scrollTop()));
+await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'side-pocket:op', op: 'remove', args: { id: document.querySelector('#pinned .tile').dataset.id } }));
+await sleep(800);
 await sw.evaluate((ids) => chrome.tabs.remove(ids), extra);
 await panel.bringToFront();
 await panel.evaluate(() => { delete document.hidden; delete document.hasFocus; });
@@ -166,6 +192,79 @@ await panel.locator('#device-name').press('Enter');
 await sleep(1200);
 const nm = await sw.evaluate(async (id) => (await chrome.storage.sync.get('dv:' + id))['dv:' + id]?.nm, selfId);
 check('改名后马上同步出去', nm === '家里', nm);
+console.log('外观：字体、粗细、字号');
+const lookOf = () => panel.evaluate(async () => {
+  const b = getComputedStyle(document.body);
+  return { family: b.fontFamily, size: b.fontSize, weight: b.fontWeight, strong: getComputedStyle(document.querySelector('#saved-section .sec-head')).fontWeight, rowH: getComputedStyle(document.querySelector('#new-tab')).height, saved: (await chrome.storage.local.get('ui.font'))['ui.font'] };
+});
+const look0 = await lookOf();
+check('默认：系统字体、13px、普通 400、强调 500', look0.family.startsWith('system-ui') && look0.size === '13px' && look0.weight === '400' && look0.strong === '500' && !look0.saved, JSON.stringify(look0));
+const fontIds = await panel.locator('#font-family option').evaluateAll((o) => o.map((x) => x.value));
+check('字体下拉里是「跟随系统」加这台电脑已安装的字体', fontIds[0] === '' && fontIds.length > 5, String(fontIds.length));
+const pickFont = fontIds[Math.floor(fontIds.length / 2)];
+await panel.locator('#font-family').selectOption(pickFont);
+await panel.locator('#font-weight').selectOption('300');
+await panel.locator('#font-strong').selectOption('700');
+await panel.locator('#font-size').selectOption('l');
+await sleep(400);
+const look1 = await lookOf();
+check('选了字体、粗细、字号：马上生效', look1.family.replace(/"/g, '').startsWith(pickFont) && look1.size === '15px' && look1.weight === '300' && look1.strong === '700' && look1.rowH === '36px' && look1.saved?.family === pickFont && look1.saved.weight === 300 && look1.saved.strong === 700 && look1.saved.size === 'l', JSON.stringify(look1));
+await panel.screenshot({ path: (process.env.OUT || '/tmp/') + 'sidepanel-look.png' });
+await panel.reload();
+await sleep(1200);
+const look2 = await lookOf();
+check('重新打开侧栏：外观还是刚才选的', look2.family.replace(/"/g, '').startsWith(pickFont) && look2.size === '15px' && look2.strong === '700', JSON.stringify(look2));
+await panel.locator('#open-settings').click();
+await sleep(500);
+check('设置里选中的是当前值', (await panel.locator('#font-family').inputValue()) === pickFont && (await panel.locator('#font-strong').inputValue()) === '700' && (await panel.locator('#font-size').inputValue()) === 'l');
+await panel.locator('#reset-look').click();
+await sleep(400);
+const look3 = await lookOf();
+check('恢复默认外观', look3.family.startsWith('system-ui') && look3.size === '13px' && look3.weight === '400' && look3.strong === '500' && !look3.saved && (await panel.locator('#font-family').inputValue()) === '', JSON.stringify(look3));
+
+console.log('语言：中文 / English');
+const textsOf = () => panel.evaluate(() => ({
+  lang: document.documentElement.lang,
+  heads: [...document.querySelectorAll('#browse .sec-head > span:first-child')].map((x) => x.textContent),
+  ph: document.querySelector('#search').placeholder,
+  sync: document.querySelector('#sync-state').textContent,
+  empty: getComputedStyle(document.querySelector('#pinned'), '::before').content,
+  setting: document.querySelector('#settings-pop .settings-title').textContent,
+  weight: document.querySelector('#font-weight').selectedOptions[0].textContent,
+  newTab: document.querySelector('#new-tab').textContent.trim(),
+  // 界面上我们自己写的文字：去掉字体下拉框（系统给的字体名）、标签标题（网页自己的标题）
+  all: (() => {
+    for (const x of document.querySelectorAll('#font-family, #tabs .row .title')) x.dataset.skip = '1';
+    const out = [...document.body.querySelectorAll('*')].filter((x) => !x.closest('[data-skip]') && !x.children.length && !['SCRIPT', 'STYLE'].includes(x.tagName)).map((x) => x.textContent.trim()).filter(Boolean);
+    for (const x of document.querySelectorAll('[data-skip]')) delete x.dataset.skip;
+    return out.join('\n');
+  })(),
+}));
+const zh0 = await textsOf();
+check('中文界面', zh0.lang === 'zh-CN' && JSON.stringify(zh0.heads) === '["置顶","收藏","这个窗口","其他电脑"]' && zh0.sync === '已同步' && zh0.setting === '外观' && zh0.empty.includes('把网站拖到这里置顶'), JSON.stringify({ ...zh0, all: 0 }));
+await panel.locator('#lang').selectOption('en');
+await sleep(800);
+const en = await textsOf();
+check('切到 English：区块标题、搜索框、底栏、设置都变成英文', en.lang === 'en' && JSON.stringify(en.heads) === '["Pinned","Saved","This window","Other computers"]' && en.ph.startsWith('Search') && en.sync === 'Synced' && en.setting === 'Appearance' && en.weight === 'Regular' && en.newTab === 'New tab' && en.empty.includes('Drag a site here'), JSON.stringify({ ...en, all: 0 }));
+const zhLeft = en.all.split('\n').filter((l) => /[\u4e00-\u9fff]/.test(l) && l.trim() !== '中文');
+check('英文界面里没有漏翻的中文（除了语言选项「中文」）', zhLeft.length === 0, JSON.stringify(zhLeft));
+await panel.locator('#search').click(); // 点一下别处，收起设置
+await sleep(300);
+await panel.locator('#tabs .row.tab').first().click({ button: 'right' });
+await sleep(300);
+const menuEn = await panel.locator('#menu').innerText();
+check('右键菜单是英文', /Copy link/.test(menuEn) && /Close tab/.test(menuEn) && !/[\u4e00-\u9fff]/.test(menuEn), menuEn);
+await panel.keyboard.press('Escape');
+await panel.screenshot({ path: (process.env.OUT || '/tmp/') + 'sidepanel-en.png' });
+const bgEn = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'side-pocket:op', op: 'saveTab', args: { url: 'javascript:alert(1)', title: 'x' } }));
+check('后台的出错提示也跟着换成英文', bgEn?.ok === false && !/[\u4e00-\u9fff]/.test(bgEn.error), JSON.stringify(bgEn));
+await panel.locator('#open-settings').click();
+await sleep(400);
+await panel.locator('#lang').selectOption('zh');
+await sleep(800);
+const zh1 = await textsOf();
+check('切回中文', zh1.lang === 'zh-CN' && JSON.stringify(zh1.heads) === JSON.stringify(zh0.heads) && zh1.sync === '已同步' && zh1.weight === '常规', JSON.stringify({ ...zh1, all: 0 }));
+
 const myKeys = () => sw.evaluate(async (id) => Object.keys(await chrome.storage.sync.get(null)).filter((k) => k === 'dv:' + id || k.startsWith(`dt:${id}:`)), selfId);
 check('上传开关默认是开的', (await panel.locator('#share-tabs').isChecked()) && (await myKeys()).length >= 2, JSON.stringify(await myKeys()));
 await panel.locator('#share-tabs').uncheck();
@@ -261,6 +360,31 @@ await panel.locator('#devices-section .sec-head').focus();
 await panel.keyboard.press('Enter');
 await sleep(300);
 check('键盘：聚焦区块标题按回车展开', await panel.evaluate(() => document.querySelector('#devices').offsetParent !== null && document.querySelector('#devices-section .sec-head').getAttribute('aria-expanded') === 'true'));
+
+console.log('置顶可以重命名');
+await panel.bringToFront();
+const firstTile = panel.locator('#pinned .tile').first();
+const firstUrl = await firstTile.evaluate((x) => x.title.split('\n')[0]) && await panel.evaluate(async () => { const id = document.querySelector('#pinned .tile').dataset.id.slice(3); return (await chrome.bookmarks.get(id))[0].url; });
+await firstTile.click({ button: 'right' });
+await panel.locator('#menu button', { hasText: '重命名' }).click();
+await sleep(400);
+const renameBox = panel.locator('#pinned .tile input.rename');
+check('右键置顶点「重命名」：格子里出现输入框，已选中原来的名字', (await renameBox.count()) === 1 && (await renameBox.evaluate((x) => document.activeElement === x && x.selectionEnd - x.selectionStart === x.value.length && x.value.length > 0)));
+const tabsBefore = (await chromeTabs()).length;
+await renameBox.click();
+await panel.keyboard.press('ControlOrMeta+a');
+await panel.keyboard.type('新 名字');
+await panel.keyboard.press('Enter');
+await sleep(1000);
+const renamed = await sw.evaluate(async (u) => (await chrome.bookmarks.search({ url: u })).map((b) => b.title), firstUrl);
+check('输入新名字按回车：格子标题和书签都改了，不会误打开网页', (await firstTile.locator('.tile-label').textContent()) === '新 名字' && renamed.includes('新 名字') && (await panel.locator('#pinned input.rename').count()) === 0 && (await chromeTabs()).length === tabsBefore, JSON.stringify([renamed, await firstTile.innerHTML()]));
+await firstTile.click({ button: 'right' });
+await panel.locator('#menu button', { hasText: '重命名' }).click();
+await sleep(300);
+await panel.keyboard.type('不要这个');
+await panel.keyboard.press('Escape');
+await sleep(500);
+check('按 Esc：取消，名字不变', (await firstTile.locator('.tile-label').textContent()) === '新 名字');
 
 console.log('删除后可以撤销');
 await sendOp('saveTab', { url: 'http://site.test/in-folder', title: '文件夹里的网页', parent: fid });

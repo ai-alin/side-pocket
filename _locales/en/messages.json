@@ -1,0 +1,5 @@
+{
+  "extDesc": { "message": "Your tabs, pinned sites and bookmarks in Chrome's side panel. Pick up the pages open on your other computers. Pinned and saved sites live in your Chrome bookmarks." },
+  "actionTitle": { "message": "Open or close Side Pocket" },
+  "cmdToggle": { "message": "Open or close the side panel" }
+}

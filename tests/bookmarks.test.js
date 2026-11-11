@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { setLang } from '../i18n.js';
 import * as M from '../model.js';
 import * as B from '../bookmarks.js';
 
@@ -85,6 +86,8 @@ const load = async (bm, ids, meta) => {
 const titles = (nodes, v, key) => v.order[key].map((id) => nodes[id].title);
 const idOf = (nodes, title) => Object.values(nodes).find((n) => n.title === title)?.id;
 
+setLang('zh'); // 断言里的文案是中文
+
 test('书签：第一次运行建好「其他书签 / Side Pocket / 置顶」，只读时不建', async () => {
   const bm = mockBm();
   assert.equal(await B.resolveRoot(bm), null);
@@ -94,6 +97,27 @@ test('书签：第一次运行建好「其他书签 / Side Pocket / 置顶」，
   assert.deepEqual(await B.resolveRoot(bm), ids);
   assert.deepEqual(await B.resolveRoot(bm, { create: true }), ids); // 再次运行不重复建
   assert.deepEqual(bm.titles('2'), ['Side Pocket']);
+});
+
+test('书签：置顶文件夹叫「置顶」或「Pinned」都认，新建时按界面语言起名，已有的不改名', async () => {
+  const bm = mockBm();
+  const ids = await B.resolveRoot(bm, { create: true, pinnedTitle: 'Pinned' }); // 英文界面的电脑先装的
+  assert.deepEqual(bm.titles(ids.root), ['Pinned']);
+  // 书签同步到中文界面的电脑：认这一个，不再建「置顶」
+  assert.deepEqual(await B.resolveRoot(bm, { create: true, pinnedTitle: '置顶' }), ids);
+  assert.deepEqual(await B.resolveRoot(bm), ids);
+  assert.deepEqual(bm.titles(ids.root), ['Pinned']);
+  await bm.create({ parentId: ids.pinned, title: 'GitHub', url: 'https://github.com/' });
+  const { nodes, v } = await load(bm, ids);
+  assert.deepEqual(titles(nodes, v, M.PINNED), ['GitHub']);
+  assert.deepEqual(titles(nodes, v, M.ROOT), []);
+  // 两台电脑各建了一个（一个「置顶」一个「Pinned」）：留有内容的那个，空的删掉
+  await bm.create({ parentId: ids.root, title: '置顶' });
+  assert.deepEqual(await B.resolveRoot(bm, { create: true }), ids);
+  assert.deepEqual(bm.titles(ids.root), ['Pinned']);
+  // 不认识的名字不会被拿来建文件夹
+  const bm2 = mockBm();
+  assert.deepEqual(bm2.titles((await B.resolveRoot(bm2, { create: true, pinnedTitle: 'Épinglé' })).root), ['置顶']);
 });
 
 test('书签：有两个 Side Pocket 时用有内容的那个，空的删掉', async () => {

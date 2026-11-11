@@ -9,6 +9,8 @@
 //   pos     在父容器里的排序值，按 (pos, id) 升序排列
 // 侧栏改书签前先在本地副本上执行一次同样的操作，让界面立即变化，后台改完书签后再重新读取。
 
+import { tr } from './i18n.js';
+
 export const PINNED = 'pinned';
 export const ROOT = 'root';
 const CONTAINERS = new Set([PINNED, ROOT]);
@@ -137,12 +139,12 @@ export function addLink(s, { id = newId(), title, url }, parent = ROOT, index) {
   return id;
 }
 
-export function addFolder(s, { id = newId(), title = '新文件夹' } = {}, parent = ROOT, index) {
+export function addFolder(s, { id = newId(), title = tr('newFolderName') } = {}, parent = ROOT, index) {
   if (parent === PINNED) throw new Error('该区域不能放文件夹');
   if (!isValidId(id) || s.nodes[id]) throw new Error('无效 id: ' + id);
   const v = view(s);
   if (!v.order[parent]) throw new Error('目标不存在: ' + parent);
-  const n = { id, type: 'folder', title: clip(title) || '新文件夹', collapsed: false };
+  const n = { id, type: 'folder', title: clip(title) || tr('newFolderName'), collapsed: false };
   s.nodes[id] = n;
   place(s, n, parent, index, v);
   return id;

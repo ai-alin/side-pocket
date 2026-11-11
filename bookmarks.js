@@ -15,9 +15,12 @@
 // bm 参数是 chrome.bookmarks（Promise 风格），测试里换成模拟对象。
 
 import * as M from './model.js';
+import { tr } from './i18n.js';
 
 export const ROOT_TITLE = 'Side Pocket';
-export const PINNED_TITLE = '置顶';
+// 置顶文件夹的名字：中文界面建的叫「置顶」，英文界面建的叫「Pinned」。两个名字都认，已有的不改名——
+// 书签会跟着账号同步到别的电脑，那台电脑的界面语言可能不一样，不能因此再建一个。
+export const PINNED_TITLES = ['置顶', 'Pinned'];
 export const COLOR_KEY = 'ui.folderColors'; // storage.sync：{ 文件夹路径: 颜色 }
 export const COLLAPSE_KEY = 'ui.folderCollapsed'; // storage.local：{ 节点 id: true }
 const PREFIX = 'bkm';
@@ -71,8 +74,9 @@ async function pickFolder(bm, folders, create) {
 /**
  * 返回 { root, pinned }（书签 id）。create=false 时只找不建，找不到返回 null / pinned 为 null。
  * 只有后台用 create=true，侧栏只读，免得两边同时各建一个。
+ * pinnedTitle：要新建置顶文件夹时用的名字（按界面语言）。
  */
-export async function resolveRoot(bm, { create = false } = {}) {
+export async function resolveRoot(bm, { create = false, pinnedTitle = PINNED_TITLES[0] } = {}) {
   const other = await otherFolder(bm);
   if (!other) return null;
   const roots = (await bm.getChildren(other.id)).filter((b) => isFolder(b) && b.title === ROOT_TITLE).sort(byAge);
@@ -81,11 +85,11 @@ export async function resolveRoot(bm, { create = false } = {}) {
     if (!create) return null;
     root = await bm.create({ parentId: other.id, title: ROOT_TITLE });
   }
-  const pins = (await bm.getChildren(root.id)).filter((b) => isFolder(b) && b.title === PINNED_TITLE).sort(byAge);
+  const pins = (await bm.getChildren(root.id)).filter((b) => isFolder(b) && PINNED_TITLES.includes(b.title)).sort(byAge);
   let pinned = await pickFolder(bm, pins, create);
   if (!pinned) {
     if (!create) return { root: root.id, pinned: null };
-    pinned = await bm.create({ parentId: root.id, title: PINNED_TITLE, index: 0 });
+    pinned = await bm.create({ parentId: root.id, title: PINNED_TITLES.includes(pinnedTitle) ? pinnedTitle : PINNED_TITLES[0], index: 0 });
   }
   return { root: root.id, pinned: pinned.id };
 }
@@ -110,7 +114,7 @@ export async function loadNodes(bm, ids, meta = {}) {
         }
         const id = toId(b.id);
         const p = path ? path + '/' + b.title : b.title;
-        const n = { id, type: 'folder', title: b.title || '未命名文件夹', parent, pos: b.index ?? 0, bp, path: p, collapsed: !!collapsed[id], t: 0 };
+        const n = { id, type: 'folder', title: b.title || tr('untitledFolder'), parent, pos: b.index ?? 0, bp, path: p, collapsed: !!collapsed[id], t: 0 };
         if (M.FOLDER_COLORS.includes(colors[p])) n.color = colors[p];
         nodes[id] = n;
         walk(b.children, id, b.id, p);
@@ -179,10 +183,10 @@ export function bmIndex(nodes, v, parent, index, bid) {
 }
 
 export async function addFolder(bm, ids, nodes, v, { title, parent = M.ROOT, index } = {}) {
-  if (parent === M.PINNED) throw new Error('该区域不能放文件夹');
+  if (parent === M.PINNED) throw new Error(tr('errNoFolderHere'));
   if (!isContainer(nodes, parent)) throw new Error('目标不存在: ' + parent);
   const bid = containerBid(ids, parent);
-  const b = await bm.create(withIndex({ parentId: bid, title: clip(title) || '新文件夹' }, bmIndex(nodes, v, parent, index, bid)));
+  const b = await bm.create(withIndex({ parentId: bid, title: clip(title) || tr('newFolderName') }, bmIndex(nodes, v, parent, index, bid)));
   return toId(b.id);
 }
 
@@ -315,7 +319,7 @@ export async function importNodes(bm, ids, allNodes) {
         await addLinkTo(n, bid);
         continue;
       }
-      const title = clip(n.title) || '新文件夹';
+      const title = clip(n.title) || tr('newFolderName');
       const m = await foldersIn(bid);
       let fb = m.get(title);
       if (!fb) {

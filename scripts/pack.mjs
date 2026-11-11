@@ -14,6 +14,7 @@ const files = readdirSync(root).filter((f) => /\.(js|html|css)$/.test(f));
 const stage = mkdtempSync(join(tmpdir(), 'side-pocket-pack-'));
 for (const f of files) cpSync(join(root, f), join(stage, f));
 cpSync(join(root, 'icons'), join(stage, 'icons'), { recursive: true });
+cpSync(join(root, '_locales'), join(stage, '_locales'), { recursive: true });
 writeFileSync(join(stage, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 
 mkdirSync(join(root, 'dist'), { recursive: true });
