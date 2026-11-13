@@ -152,12 +152,16 @@ const syncMsg = (st) => (['quota', 'rate', 'error'].includes(st) ? tr('sync_' + 
 function showSync(st) {
   if (!st) return;
   const badge = $('#sync-state');
-  badge.textContent = st === 'off' ? tr('syncOff') : syncMsg(st) ? tr('syncBad') : tr('syncOk');
+  const off = st === 'off' || st === 'offPending';
+  badge.textContent = off ? tr('syncOff') : syncMsg(st) ? tr('syncBad') : tr('syncOk');
   badge.classList.toggle('warn', !!syncMsg(st));
-  badge.classList.toggle('off', st === 'off');
-  badge.title = st === 'off' ? tr('syncOffTip') : syncMsg(st) || tr('syncOkTip');
+  badge.classList.toggle('off', off);
+  badge.title = st === 'offPending' ? tr('syncOffPendingTip') : off ? tr('syncOffTip') : syncMsg(st) || tr('syncOkTip');
   if (st === syncStatus) return;
+  const was = syncStatus;
   syncStatus = st;
+  // 之前没删掉的清单，重试后删掉了
+  if (was === 'offPending' && st === 'off') return showStatus(tr('shareOff'), 'info', 3500);
   if (syncMsg(st)) showStatus(syncMsg(st), 'warn', 8000);
   else if ($('#status').classList.contains('warn')) $('#status').hidden = true;
 }
@@ -1540,7 +1544,9 @@ function setupChromeUi() {
       share.checked = !on;
       return showStatus(tr('shareFailed', r?.error || tr('noResponse')), 'warn', 3000);
     }
-    showStatus(on ? tr('shareOn') : tr('shareOff'), 'info', 3500);
+    if (on) showStatus(tr('shareOn'), 'info', 3500);
+    else if (r.result?.cleared) showStatus(tr('shareOff'), 'info', 3500);
+    else showStatus(tr('shareOffPending'), 'warn', 6000); // 已停止上传，但清单没删掉：不能说删掉了
   });
 
   // 从设置页改完回来，侧栏重新拿到焦点时更新显示

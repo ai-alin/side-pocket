@@ -9,7 +9,10 @@ import { execSync } from 'node:child_process';
 import { chromium } from 'playwright';
 
 const EXT = '/tmp/ext-sidepanel';
-execSync(`rm -rf ${EXT} && mkdir -p ${EXT} && cp -r manifest.json *.js *.html *.css icons _locales ${EXT}/`);
+// EXT_SRC：从这个目录加载插件（比如 npm run pack 打出来的包解压后的目录），不给就用当前源码
+const SRC = process.env.EXT_SRC || '.';
+execSync(`rm -rf ${EXT} && mkdir -p ${EXT} && cd "${SRC}" && cp -r manifest.json *.js *.html *.css icons _locales ${EXT}/`);
+if (process.env.EXT_SRC) console.log('加载的是 ' + SRC);
 const PROF = '/tmp/prof-sidepanel-' + Date.now();
 const launch = () =>
   chromium.launchPersistentContext(PROF, {
@@ -241,11 +244,11 @@ const textsOf = () => panel.evaluate(() => ({
   })(),
 }));
 const zh0 = await textsOf();
-check('中文界面', zh0.lang === 'zh-CN' && JSON.stringify(zh0.heads) === '["置顶","收藏","这个窗口","其他电脑"]' && zh0.sync === '已同步' && zh0.setting === '外观' && zh0.empty.includes('把网站拖到这里置顶'), JSON.stringify({ ...zh0, all: 0 }));
+check('中文界面', zh0.lang === 'zh-CN' && JSON.stringify(zh0.heads) === '["置顶","收藏","这个窗口","其他电脑"]' && zh0.sync === '同步已开启' && zh0.setting === '外观' && zh0.empty.includes('把网站拖到这里置顶'), JSON.stringify({ ...zh0, all: 0 }));
 await panel.locator('#lang').selectOption('en');
 await sleep(800);
 const en = await textsOf();
-check('切到 English：区块标题、搜索框、底栏、设置都变成英文', en.lang === 'en' && JSON.stringify(en.heads) === '["Pinned","Saved","This window","Other computers"]' && en.ph.startsWith('Search') && en.sync === 'Synced' && en.setting === 'Appearance' && en.weight === 'Regular' && en.newTab === 'New tab' && en.empty.includes('Drag a site here'), JSON.stringify({ ...en, all: 0 }));
+check('切到 English：区块标题、搜索框、底栏、设置都变成英文', en.lang === 'en' && JSON.stringify(en.heads) === '["Pinned","Saved","This window","Other computers"]' && en.ph.startsWith('Search') && en.sync === 'Sync on' && en.setting === 'Appearance' && en.weight === 'Regular' && en.newTab === 'New tab' && en.empty.includes('Drag a site here'), JSON.stringify({ ...en, all: 0 }));
 const zhLeft = en.all.split('\n').filter((l) => /[\u4e00-\u9fff]/.test(l) && l.trim() !== '中文');
 check('英文界面里没有漏翻的中文（除了语言选项「中文」）', zhLeft.length === 0, JSON.stringify(zhLeft));
 await panel.locator('#search').click(); // 点一下别处，收起设置
@@ -263,7 +266,7 @@ await sleep(400);
 await panel.locator('#lang').selectOption('zh');
 await sleep(800);
 const zh1 = await textsOf();
-check('切回中文', zh1.lang === 'zh-CN' && JSON.stringify(zh1.heads) === JSON.stringify(zh0.heads) && zh1.sync === '已同步' && zh1.weight === '常规', JSON.stringify({ ...zh1, all: 0 }));
+check('切回中文', zh1.lang === 'zh-CN' && JSON.stringify(zh1.heads) === JSON.stringify(zh0.heads) && zh1.sync === '同步已开启' && zh1.weight === '常规', JSON.stringify({ ...zh1, all: 0 }));
 
 const myKeys = () => sw.evaluate(async (id) => Object.keys(await chrome.storage.sync.get(null)).filter((k) => k === 'dv:' + id || k.startsWith(`dt:${id}:`)), selfId);
 check('上传开关默认是开的', (await panel.locator('#share-tabs').isChecked()) && (await myKeys()).length >= 2, JSON.stringify(await myKeys()));
@@ -276,7 +279,40 @@ check('关着的时候开新网页：不上传', (await myKeys()).length === 0, 
 await panel.locator('#share-tabs').check();
 await sleep(1200);
 const backTabs = await sw.evaluate(async (id) => (await chrome.storage.sync.get(`dt:${id}:0`))[`dt:${id}:0`], selfId);
-check('重新打开：马上整份上传，底栏回到「已同步」', (await myKeys()).length >= 2 && backTabs?.some((t) => t[0] === 'http://site.test/while-off') && (await panel.locator('#sync-state').textContent()) === '已同步', JSON.stringify([await myKeys(), backTabs]));
+check('重新打开：马上整份上传，底栏回到「同步已开启」', (await myKeys()).length >= 2 && backTabs?.some((t) => t[0] === 'http://site.test/while-off') && (await panel.locator('#sync-state').textContent()) === '同步已开启', JSON.stringify([await myKeys(), backTabs]));
+
+console.log('关掉共享时清单删不掉（比如被 Chrome 限流）');
+// 让同步存储的删除一直失败，直到下面放行：换掉后台里的 chrome.storage.sync.remove
+await sw.evaluate(() => {
+  const real = chrome.storage.sync.remove.bind(chrome.storage.sync);
+  self.__failed = 0; self.__fail = true;
+  chrome.storage.sync.remove = (...a) => (self.__fail ? (self.__failed++, Promise.reject(new Error('MAX_WRITE_OPERATIONS_PER_MINUTE'))) : real(...a));
+  self.__restore = () => { chrome.storage.sync.remove = real; };
+});
+const metaAt = () => sw.evaluate(async (id) => (await chrome.storage.sync.get('dv:' + id))['dv:' + id]?.at ?? null, selfId);
+const atBefore = await metaAt();
+await panel.locator('#share-tabs').uncheck();
+await sleep(1200);
+const pend = await sw.evaluate(async () => ({ failed: self.__failed, share: (await chrome.storage.local.get('devices.share'))['devices.share'], last: (await chrome.storage.local.get('devices.last'))['devices.last'] ?? null }));
+const pendText = await panel.locator('#status .status-text').textContent();
+check('删除失败：界面不说「已删掉」，说的是已停止共享、稍后重试', pend.failed === 1 && pendText === '已停止共享。之前同步出去的清单暂时没删掉，稍后自动重试' && !pendText.includes('已从同步里删掉'), JSON.stringify([pend, pendText]));
+check('关闭的选择保持：开关是关的，底栏显示「未开启同步」并说明清单还没删掉', pend.share === false && !pend.last?.off && !(await panel.locator('#share-tabs').isChecked()) && (await panel.locator('#sync-state').textContent()) === '未开启同步' && (await panel.locator('#sync-state').getAttribute('title')).includes('还没删掉'), JSON.stringify([pend, await panel.locator('#sync-state').getAttribute('title')]));
+check('清单确实还在同步存储里（没有假装删掉）', (await myKeys()).length >= 2 && (await metaAt()) === atBefore, JSON.stringify(await myKeys()));
+await sw.evaluate(async (w) => chrome.tabs.create({ windowId: w, url: 'http://site.test/while-pending', active: false }), panelWin);
+await sleep(13000);
+const pendTabs = await sw.evaluate(async (id) => (await chrome.storage.sync.get(`dt:${id}:0`))[`dt:${id}:0`], selfId);
+const failedNow = await sw.evaluate(() => self.__failed);
+check('删除一直失败期间开新网页：不上传，留着的清单没有被更新，共享没有被重新打开', failedNow >= 1 && (await metaAt()) === atBefore && !pendTabs?.some((t) => t[0].includes('while-pending')) && (await sw.evaluate(async () => (await chrome.storage.local.get('devices.share'))['devices.share'])) === false, JSON.stringify([await metaAt(), atBefore, pendTabs]));
+// 放行，再重试（平时由一分钟后的闹钟或下一次标签变化触发，这里直接触发同一条路径）
+await sw.evaluate(() => { self.__fail = false; });
+await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'side-pocket:upload' }));
+await sleep(1200);
+const done2 = await sw.evaluate(async () => ({ last: (await chrome.storage.local.get('devices.last'))['devices.last'], share: (await chrome.storage.local.get('devices.share'))['devices.share'] }));
+check('重试成功：清单删掉，状态更新，这时才提示已删掉；共享仍然是关的', (await myKeys()).length === 0 && done2.last?.off === true && done2.share === false && (await panel.locator('#status .status-text').textContent()) === '已关闭：这台电脑的网页清单已从同步里删掉' && !(await panel.locator('#sync-state').getAttribute('title')).includes('还没删掉'), JSON.stringify([await myKeys(), done2, await panel.locator('#status').textContent()]));
+await sw.evaluate(() => self.__restore());
+await panel.locator('#share-tabs').check();
+await sleep(1200);
+check('再打开：恢复上传', (await myKeys()).length >= 2 && (await panel.locator('#sync-state').textContent()) === '同步已开启', JSON.stringify(await myKeys()));
 await panel.screenshot({ path: (process.env.OUT || '/tmp/') + 'sidepanel-settings.png' });
 const opened = ctx.waitForEvent('page', { timeout: 3000 }).catch(() => null);
 await panel.locator('#edit-shortcut').click();

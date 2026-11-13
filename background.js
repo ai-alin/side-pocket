@@ -31,7 +31,7 @@ const BACKUP_KEY = 'backup.before0100'; // storage.local：升级到 0.10.0 删�
 const bm = chrome.bookmarks;
 let deviceId = null;
 let ready = null;
-let status = 'saved';
+let status = 'saved'; // saved | quota | rate | error | off（已停止上传，清单已删）| offPending（已停止上传，清单还没删掉，会重试）
 let published = null;
 let ids = null; // { root, pinned }：书签里 Side Pocket 和置顶文件夹的 id
 let saved = {}; // 书签换算成的侧栏节点
@@ -69,7 +69,7 @@ async function init() {
     await chrome.storage.local.set({ deviceId });
   }
   await loadLang(); // 界面语言：出错提示、默认电脑名、新建置顶文件夹时的名字都跟着它
-  if (!(await shareOn())) status = 'off';
+  if (!(await shareOn())) status = (await chrome.storage.local.get(LAST_KEY))[LAST_KEY]?.off ? 'off' : 'offPending';
   await reloadSaved();
   // 清理失败不能拖垮其他功能：旧数据还在原处、也有备份，下次启动再试
   await cleanupLegacy({ full: true }).catch((e) => console.error('[side-pocket] 清理旧数据失败', e));
@@ -191,17 +191,24 @@ async function shareOn() {
   return (await chrome.storage.local.get(SHARE_KEY))[SHARE_KEY] !== false;
 }
 
-/** 关掉上传后：把本机清单从同步存储里删掉（只做一次） */
+/**
+ * 关掉上传后：把本机清单从同步存储里删掉（只做一次）。返回清单是不是已经删掉了。
+ * 删不掉（比如被 Chrome 限流）时不会重新打开上传：保持关闭，状态记成 offPending，一分钟后再试。
+ */
 async function stopSharing(last) {
-  status = 'off';
-  if (last.off) return false;
+  if (last.off) {
+    status = 'off';
+    return true;
+  }
   try {
     const keys = D.deviceKeys(await chrome.storage.sync.get(null), deviceId);
     if (keys.length) await chrome.storage.sync.remove(keys);
   } catch (e) {
+    status = 'offPending';
     chrome.alarms.create(UPLOAD_ALARM, { delayInMinutes: 1 });
     return false;
   }
+  status = 'off';
   await chrome.storage.local.set({ [LAST_KEY]: { off: true } });
   chrome.alarms.clear(UPLOAD_ALARM);
   return true;
@@ -311,8 +318,9 @@ async function deviceOp(op, a) {
     if (a.on === false) await chrome.storage.local.set({ [SHARE_KEY]: false });
     else await chrome.storage.local.remove(SHARE_KEY);
     await chrome.storage.local.remove(LAST_KEY);
-    await upload({ force: true });
-    return a.on !== false;
+    const done = await upload({ force: true });
+    // cleared：关掉时，这台电脑的清单是不是已经从同步存储里删掉了（没删掉会自动重试）
+    return { on: a.on !== false, cleared: a.on === false ? done === true : null };
   }
   if (op === 'removeDevice') {
     if (!D.isDeviceId(a.id) || a.id === deviceId) throw new Error(tr('errInvalid'));
