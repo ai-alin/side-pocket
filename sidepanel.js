@@ -1566,7 +1566,12 @@ async function init() {
   applySections();
   const s = await chrome.storage.session.get(D.VIEW_KEY);
   showSync(s[D.VIEW_KEY]?.status);
-  await refresh({ force: true });
+  try {
+    await refresh({ force: true });
+  } finally {
+    // 第一屏摆好以后才放开动画（用计时器不用 requestAnimationFrame：侧栏在后台时后者不触发）
+    setTimeout(() => document.documentElement.classList.remove('booting'), 60);
+  }
 }
 
 init();

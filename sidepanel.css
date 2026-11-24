@@ -15,6 +15,7 @@
   --base: var(--solid-bg);
   --ink: #1F1F1F;
   --hover-p: 6%;
+  --press-p: 10%;
   --active-p: 10%;
   --tint-p: 8%; /* 有颜色的文件夹：整块底色里掺多少文件夹颜色 */
   --press: rgba(31, 31, 31, 0.1);
@@ -58,6 +59,7 @@
     --hover: rgba(227, 227, 227, 0.08);
     --ink: #E3E3E3;
     --hover-p: 8%;
+    --press-p: 13%;
     --active-p: 16%;
     --tint-p: 13%;
     --press: rgba(227, 227, 227, 0.13);
@@ -147,6 +149,7 @@ img { -webkit-user-drag: none; pointer-events: none; }
   cursor: pointer;
 }
 .icon-btn:hover { background: var(--hover); color: var(--fg); }
+.icon-btn:active { background: var(--press); }
 .icon-btn svg { width: 16px; height: 16px; }
 
 .scroll-area {
@@ -175,7 +178,13 @@ img { -webkit-user-drag: none; pointer-events: none; }
 .sec-caret svg { width: 12px; height: 12px; }
 .sec-head:hover .sec-caret, .sec-head:focus-visible .sec-caret, .sec-collapsed .sec-caret { opacity: 1; }
 .sec-collapsed .sec-caret { transform: none; }
-.section.sec-collapsed > :not(.sec-head) { display: none; }
+/* 折叠 / 展开：和文件夹一样，高度从有到无。收完以后内容才真正不显示（不能被 Tab 键聚焦到） */
+.sec-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 200ms var(--ease); }
+.sec-inner { min-height: 0; overflow: hidden; transition: display 200ms; transition-behavior: allow-discrete; }
+.sec-collapsed > .sec-body { grid-template-rows: 0fr; }
+.sec-collapsed > .sec-body > .sec-inner { display: none; }
+/* 刚打开侧栏时直接摆成记住的样子，不放动画 */
+.booting *, .booting *::before, .booting *::after { transition: none !important; animation: none !important; }
 .sec-act {
   margin-left: auto;
   padding: 2px 8px;
@@ -220,9 +229,10 @@ img { -webkit-user-drag: none; pointer-events: none; }
   border-radius: var(--r-l);
   background: var(--field);
   cursor: pointer;
-  transition: background 120ms ease;
+  transition: background 120ms ease, transform 120ms var(--ease);
 }
 .tile:hover { background: var(--press); }
+.tile:active { transform: scale(0.96); }
 .tile img { width: 20px; height: 20px; border-radius: 4px; }
 .tile-label {
   max-width: 100%;
@@ -280,6 +290,8 @@ img { -webkit-user-drag: none; pointer-events: none; }
   --row-solid: var(--base);
 }
 .row:hover { background: var(--hover); --row-solid: color-mix(in srgb, var(--ink) var(--hover-p), var(--base)); }
+/* 按下：比悬停再深一档 */
+.row:active:not(.active) { background: var(--press); --row-solid: color-mix(in srgb, var(--ink) var(--press-p), var(--base)); }
 .row.active { background: var(--active); --row-solid: color-mix(in srgb, var(--accent) var(--active-p), var(--base)); }
 .row img.fav { width: 16px; height: 16px; flex: none; border-radius: 4px; }
 .row .title {
@@ -324,6 +336,7 @@ img { -webkit-user-drag: none; pointer-events: none; }
   cursor: pointer;
 }
 .row .actions button:hover { background: var(--press); color: var(--fg); }
+.row .actions button:active { transform: scale(0.9); }
 .row .actions svg { width: 14px; height: 14px; }
 .row input.rename {
   flex: 1;
@@ -426,6 +439,21 @@ body.is-dragging { cursor: grabbing; }
 body.is-dragging .row:hover { background: transparent; }
 body.is-dragging .folder-children-wrap, body.is-dragging .tile { transition: none !important; }
 
+/* ---------- 浮层的出现和消失：菜单、底部提示、设置 ---------- */
+/* 淡入并轻轻到位，消失时淡出。只用透明度和位移（不缩放：菜单要按自己的真实大小定位）。
+   不支持 allow-discrete 的旧版 Chrome 上就是原来的瞬间出现 / 消失。 */
+.menu, .status, .settings-pop {
+  transition: opacity 130ms ease, transform 180ms var(--ease), display 130ms;
+  transition-behavior: allow-discrete;
+}
+.menu[hidden], .status[hidden], .settings-pop[hidden] { opacity: 0; pointer-events: none; }
+.menu[hidden] { transform: translateY(-4px); }
+.status[hidden], .settings-pop[hidden] { transform: translateY(6px); }
+@starting-style {
+  .menu:not([hidden]) { opacity: 0; transform: translateY(-4px); }
+  .status:not([hidden]), .settings-pop:not([hidden]) { opacity: 0; transform: translateY(6px); }
+}
+
 /* ---------- 菜单 ---------- */
 .menu {
   position: fixed;
@@ -502,7 +530,8 @@ body.is-dragging .folder-children-wrap, body.is-dragging .tile { transition: non
   line-height: 1.45;
 }
 .status.warn { color: var(--warn); }
-.status:not([hidden]) { display: flex; align-items: center; gap: 10px; min-height: 40px; }
+/* 不写成 :not([hidden])：淡出的那一小段时间里布局也要保持不变 */
+.status { display: flex; align-items: center; gap: 10px; min-height: 40px; }
 .status-text { flex: 1; min-width: 0; }
 .status-act {
   flex: none;
