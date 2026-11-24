@@ -36,6 +36,7 @@ const DICT = {
     pin: '置顶',
     unpin: '取消置顶',
     closeTab: '关闭标签',
+    moveToTop: '移到顶部',
     closeTabKeep: '关闭标签（保留在收藏里）',
     more: '更多',
     open: '打开',
@@ -132,7 +133,12 @@ const DICT = {
     notSet: '未设置',
     shortcutHint: '快捷键可能被别的扩展占用了，点下面的按钮重新设置。',
     editShortcut: '修改快捷键',
-    sideNote: '点工具栏上的扩展图标也可以打开或关闭侧边栏。侧边栏放左边还是右边，在 Chrome 设置 → 外观 → 侧边栏位置里选。',
+    sideNote: '点工具栏上的扩展图标也可以打开或关闭侧边栏。',
+    showSearch: '显示搜索框',
+    sidePosTitle: '侧边栏位置',
+    sidePosNow: (left) => `现在在${left ? '左' : '右'}侧。`,
+    sidePosNote: '放左边还是右边只能在 Chrome 自己的设置里改（外观 → 侧边栏位置），插件改不了。',
+    changeSide: '去 Chrome 设置里修改',
   },
 
   en: {
@@ -156,6 +162,7 @@ const DICT = {
     pin: 'Pin',
     unpin: 'Unpin',
     closeTab: 'Close tab',
+    moveToTop: 'Move to top',
     closeTabKeep: 'Close tab (stays saved)',
     more: 'More',
     open: 'Open',
@@ -246,7 +253,12 @@ const DICT = {
     notSet: 'Not set',
     shortcutHint: 'Another extension may be using this shortcut. Use the button below to set it again.',
     editShortcut: 'Change shortcut',
-    sideNote: 'You can also click the extension’s toolbar icon to open or close the side panel. To move the panel to the left or right, go to Chrome Settings → Appearance → Side panel position.',
+    sideNote: 'You can also click the extension’s toolbar icon to open or close the side panel.',
+    showSearch: 'Show the search box',
+    sidePosTitle: 'Side panel position',
+    sidePosNow: (left) => `Currently on the ${left ? 'left' : 'right'}.`,
+    sidePosNote: 'Left or right can only be changed in Chrome’s own settings (Appearance → Side panel position). Extensions can’t change it.',
+    changeSide: 'Change in Chrome settings',
   },
 };
 

@@ -52,6 +52,7 @@ const SVG = {
   x: '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   more: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="12.5" cy="8" r="1.3" fill="currentColor"/></svg>',
   save: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 2.5h7a1 1 0 0 1 1 1v10l-4.5-3-4.5 3v-10a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
+  top: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 2.8h9M8 13.4V6M4.8 9 8 5.8 11.2 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   pin: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M9.6 2.2 13.8 6.4l-1.5.4-2.6 2.6.2 2.8-1.2 1.2-2.4-2.4-3 3M5.1 7.1 4 8.3l1.2 1.2M5.1 7.1l2.6-2.6.4-1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
@@ -719,6 +720,21 @@ function folderRow(n) {
 }
 
 /** 这个窗口：和 Chrome 标签栏一模一样，一个标签一行 */
+/**
+ * 「移到顶部」要把这个标签挪到哪：这个窗口的第一个。Chrome 的固定标签永远排在最前面，
+ * 普通标签不能插到它们前面，所以普通标签是挪到固定标签后面的第一个。已经在那了返回 null。
+ */
+function topSpot(t) {
+  const first = t.pinned ? winTabs[0] : winTabs.find((x) => !x.pinned);
+  return first && first.id !== t.id ? first : null;
+}
+
+function moveToTop(t) {
+  const first = topSpot(t);
+  if (!first) return;
+  return chrome.tabs.move(t.id, { index: first.index }).catch((e) => showStatus(tr('opFailed', e?.message || e), 'warn', 3000));
+}
+
 function tabRow(t) {
   const url = tabUrl(t);
   const web = /^(https?|file|ftp):/i.test(url);
@@ -737,6 +753,7 @@ function tabRow(t) {
     el(
       'span',
       { class: 'actions' },
+      topSpot(t) ? actBtn('top', tr('moveToTop'), SVG.top) : null,
       web ? actBtn('save', tr('save'), SVG.save) : null,
       web ? actBtn('pin', tr('pin'), SVG.pin) : null,
       actBtn('close', tr('closeTab'), SVG.x),
@@ -972,6 +989,7 @@ function tabMenu(t) {
   const url = tabUrl(t);
   const items = [];
   if (!t.active) items.push({ label: tr('switchToTab'), run: () => activateTab(t) });
+  if (topSpot(t)) items.push({ label: tr('moveToTop'), run: () => moveToTop(t) });
   if (/^(https?|file|ftp):/i.test(url)) {
     items.push({ label: tr('save'), run: () => pickSave(url, t.title, reshow) }, { label: tr('pin'), run: () => saveUrl(url, t.title, M.PINNED) });
   }
@@ -1054,6 +1072,7 @@ document.addEventListener('click', (e) => {
   if (t.kind === 'device') return act === 'device-menu' ? menuAt(deviceMenu(t.dev)) : toggleDevice(t.dev.id);
   if (t.kind === 'tab') {
     const url = tabUrl(t.tab);
+    if (act === 'top') return moveToTop(t.tab);
     if (act === 'save') return pickSave(url, t.tab.title, menuAt);
     if (act === 'pin') return saveUrl(url, t.tab.title, M.PINNED);
     if (act === 'close') return chrome.tabs.remove(t.tab.id);
@@ -1442,7 +1461,22 @@ async function fillLookUi() {
   fill('#font-family', [opt('', tr('fontSystem')), ...fonts.map(([id, name]) => opt(id, name))], look.family);
 }
 
+const SEARCH_KEY = 'ui.showSearch'; // storage.local：false = 不显示顶部的搜索框（默认显示）
+
+function applySearchBar(show) {
+  $('.top-bar').hidden = !show;
+  $('#show-search').checked = show;
+  if (!show && query) {
+    searchInput.value = '';
+    setQuery('');
+  }
+}
+
 function setupLookUi() {
+  $('#show-search').addEventListener('change', (e) => {
+    if (e.target.checked) chrome.storage.local.remove(SEARCH_KEY);
+    else chrome.storage.local.set({ [SEARCH_KEY]: false });
+  });
   $('#font-family').addEventListener('change', (e) => saveLook({ family: e.target.value }));
   $('#font-weight').addEventListener('change', (e) => saveLook({ weight: Number(e.target.value) }));
   $('#font-strong').addEventListener('change', (e) => saveLook({ strong: Number(e.target.value) }));
@@ -1459,6 +1493,7 @@ function setupLookUi() {
   });
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
+    if (changes[SEARCH_KEY]) applySearchBar(changes[SEARCH_KEY].newValue !== false);
     if (changes[FONT_KEY]) {
       applyLook(changes[FONT_KEY].newValue);
       if (!$('#settings-pop').hidden) fillLookUi();
@@ -1479,6 +1514,9 @@ function setupLookUi() {
 /** 设置里显示当前快捷键和这台电脑的名字 */
 async function refreshSettingsUi() {
   fillLookUi();
+  // 侧边栏现在在哪一边（Chrome 140 起才读得到；读不到就不显示这一句）
+  const side = (await chrome.sidePanel.getLayout?.().catch(() => null))?.side;
+  $('#side-now').textContent = side === 'left' || side === 'right' ? tr('sidePosNow', side === 'left') : '';
   const [cmds, info] = await Promise.all([
     chrome.commands.getAll().catch(() => []),
     chrome.runtime.sendMessage({ type: 'side-pocket:info' }).catch(() => null),
@@ -1510,6 +1548,11 @@ function setupChromeUi() {
   document.addEventListener('click', () => setPop(false));
 
   // 扩展不能自己改快捷键，只能打开 Chrome 的快捷键设置页
+  // 侧边栏放左边还是右边：扩展改不了，只能打开 Chrome 的外观设置页
+  $('#edit-side').addEventListener('click', () => {
+    setPop(false);
+    chrome.tabs.create({ url: 'chrome://settings/appearance', windowId: winId ?? undefined });
+  });
   $('#edit-shortcut').addEventListener('click', () => {
     setPop(false);
     chrome.tabs.create({ url: 'chrome://extensions/shortcuts', windowId: winId ?? undefined });
@@ -1554,12 +1597,13 @@ function setupChromeUi() {
 }
 
 async function init() {
-  const saved = await chrome.storage.local.get([SEC_KEY, FONT_KEY, LANG_KEY, LAST_FOLDER_KEY]);
+  const saved = await chrome.storage.local.get([SEC_KEY, FONT_KEY, LANG_KEY, LAST_FOLDER_KEY, SEARCH_KEY]);
   lastFolder = saved[LAST_FOLDER_KEY] || null;
   langPref = saved[LANG_KEY] || '';
   setLang(langPref);
   applyI18n();
   applyLook(saved[FONT_KEY]);
+  applySearchBar(saved[SEARCH_KEY] !== false);
   setupChromeUi();
   setupLookUi();
   secCollapsed = saved[SEC_KEY] || {};

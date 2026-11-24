@@ -109,6 +109,8 @@ img { -webkit-user-drag: none; pointer-events: none; }
   height: 100vh;
 }
 .top-bar { display: flex; align-items: center; gap: 4px; padding: 10px 8px 4px; }
+/* 设置里关掉了搜索框：顶上不留空 */
+.top-bar[hidden] + .scroll-area .sec-head[data-sec="pinned"] { margin-top: 8px; }
 .search {
   flex: 1;
   min-width: 0;
@@ -616,6 +618,7 @@ body.is-dragging .folder-children-wrap, body.is-dragging .tile { transition: non
   cursor: pointer;
 }
 .settings-field select:focus-visible { border-color: var(--accent); }
+.settings-check-gap { margin-top: 6px; }
 .settings-title-gap { margin-top: 16px; }
 .settings-note-tight { margin-top: 4px !important; }
 .settings-note { margin: 10px 0 0; font-size: var(--fs-xs); line-height: 1.5; color: var(--muted); }

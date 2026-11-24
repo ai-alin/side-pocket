@@ -251,7 +251,7 @@ const en = await textsOf();
 check('切到 English：区块标题、搜索框、底栏、设置都变成英文', en.lang === 'en' && JSON.stringify(en.heads) === '["Pinned","Saved","This window","Other computers"]' && en.ph.startsWith('Search') && en.sync === 'Sync on' && en.setting === 'Appearance' && en.weight === 'Regular' && en.newTab === 'New tab' && en.empty.includes('Drag a site here'), JSON.stringify({ ...en, all: 0 }));
 const zhLeft = en.all.split('\n').filter((l) => /[\u4e00-\u9fff]/.test(l) && l.trim() !== '中文');
 check('英文界面里没有漏翻的中文（除了语言选项「中文」）', zhLeft.length === 0, JSON.stringify(zhLeft));
-await panel.locator('#search').click(); // 点一下别处，收起设置
+await panel.locator('#sync-state').click(); // 点一下别处，收起设置（设置面板高，窗口矮的时候会盖住搜索框）
 await sleep(300);
 await panel.locator('#tabs .row.tab').first().click({ button: 'right' });
 await sleep(300);
@@ -396,6 +396,59 @@ await panel.locator('#devices-section .sec-head').focus();
 await panel.keyboard.press('Enter');
 await sleep(300);
 check('键盘：聚焦区块标题按回车展开', await panel.evaluate(() => document.querySelector('#devices').offsetParent !== null && document.querySelector('#devices-section .sec-head').getAttribute('aria-expanded') === 'true'));
+
+console.log('移到顶部');
+await panel.bringToFront();
+const topIds = await sw.evaluate(async (w) => { const out = []; for (const u of ['top1', 'top2']) out.push(String((await chrome.tabs.create({ windowId: w, url: 'http://site.test/' + u, active: false })).id)); return out; }, panelWin);
+await sleep(1500);
+const topRow = (id) => panel.locator(`#tabs .row.tab[data-tab="${id}"]`);
+const firstShown = async () => (await shownTabs())[0];
+const wasFirst = await firstShown();
+check('第一个标签上没有「移到顶部」按钮，别的标签有，而且排在收藏按钮左边', (await topRow(wasFirst).locator('[data-act=top]').count()) === 0 && (await topRow(topIds[1]).locator('.actions [data-act]').evaluateAll((b) => b.map((x) => x.dataset.act).join())) === 'top,save,pin,close');
+await topRow(topIds[1]).hover();
+await topRow(topIds[1]).locator('[data-act=top]').click();
+await sleep(1000);
+check('点「移到顶部」：这个标签排到这个窗口的第一个，Chrome 标签栏跟着变', (await firstShown()) === topIds[1] && (await chromeTabs())[0] === topIds[1] && (await shownTabs())[1] === wasFirst && (await same()), JSON.stringify([await shownTabs(), await chromeTabs()]));
+await sw.evaluate((id) => chrome.tabs.update(Number(id), { pinned: true }), wasFirst); // Chrome 的固定标签
+await sleep(1000);
+await topRow(topIds[0]).click({ button: 'right' });
+await panel.locator('#menu button', { hasText: '移到顶部' }).click();
+await sleep(1000);
+const afterPin = await shownTabs();
+check('有 Chrome 固定标签时：普通标签移到固定标签后面的第一个（右键菜单里也有这一项）', afterPin[0] === wasFirst && afterPin[1] === topIds[0] && afterPin[2] === topIds[1] && (await same()) && (await topRow(topIds[0]).locator('[data-act=top]').count()) === 0, JSON.stringify(afterPin));
+await sw.evaluate(async ([pin, ids]) => { await chrome.tabs.update(Number(pin), { pinned: false }); await chrome.tabs.remove(ids.map(Number)); }, [wasFirst, topIds]);
+await sleep(1200);
+check('收拾完：侧栏和 Chrome 还是一样', await same(), JSON.stringify([await shownTabs(), await chromeTabs()]));
+
+console.log('设置：显示搜索框、侧边栏位置');
+if (await panel.locator('#settings-pop').isHidden()) await panel.locator('#open-settings').click();
+await sleep(500);
+check('搜索框默认显示，开关是勾上的', (await panel.locator('.top-bar').isVisible()) && (await panel.locator('#show-search').isChecked()));
+await panel.locator('#search').fill('site');
+await sleep(300);
+if (await panel.locator('#settings-pop').isHidden()) await panel.locator('#open-settings').click();
+await sleep(400);
+await panel.locator('#show-search').uncheck();
+await sleep(500);
+check('取消勾选：搜索框不显示，正在搜的内容清掉，回到正常列表', (await panel.locator('.top-bar').isHidden()) && (await panel.locator('#browse').isVisible()) && (await panel.locator('#results-section').isHidden()) && (await sw.evaluate(async () => (await chrome.storage.local.get('ui.showSearch'))['ui.showSearch'])) === false);
+await panel.reload();
+await sleep(1200);
+check('重新打开侧栏：还是不显示', await panel.locator('.top-bar').isHidden());
+await panel.locator('#open-settings').click();
+await sleep(500);
+check('设置里的开关是没勾的', !(await panel.locator('#show-search').isChecked()));
+await panel.locator('#show-search').check();
+await sleep(500);
+check('重新勾上：搜索框回来', (await panel.locator('.top-bar').isVisible()) && (await sw.evaluate(async () => (await chrome.storage.local.get('ui.showSearch'))['ui.showSearch'])) === undefined);
+const sideNow = await panel.locator('#side-now').textContent();
+check('侧边栏位置：读得到就写「现在在左 / 右侧」，读不到就不写', sideNow === '' || /^现在在[左右]侧。$/.test(sideNow), sideNow);
+const sidePage = ctx.waitForEvent('page', { timeout: 3000 }).catch(() => null);
+await panel.locator('#edit-side').click();
+const sp2 = await sidePage;
+check('「去 Chrome 设置里修改」打开 Chrome 的外观设置页', (sp2?.url() || '').startsWith('chrome://settings/appearance'), sp2?.url());
+await sp2?.close();
+await panel.bringToFront();
+await sleep(400);
 
 console.log('收藏时选文件夹，置顶有提示；新建文件夹在「收藏」标题行右边');
 await panel.bringToFront();
